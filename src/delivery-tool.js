@@ -1,5 +1,5 @@
-require('dotenv').config();
-console.log('OPENAI_API_KEY (delivery-tool.js):', process.env.OPENAI_API_KEY);
+require("dotenv").config();
+console.log("OPENAI_API_KEY (delivery-tool.js):", process.env.OPENAI_API_KEY);
 
 const axios = require("axios");
 const mysql = require("mysql2/promise");
@@ -20,14 +20,8 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
-
 if (!process.env.OPENAI_API_KEY) {
   console.error("Lỗi: Thiếu OPENAI_API_KEY trong biến môi trường");
-  process.exit(1);
-}
-if (!process.env.TOMTOM_API_KEY) {
-  console.error("Lỗi: Thiếu TOMTOM_API_KEY trong biến môi trường");
   process.exit(1);
 }
 
@@ -45,13 +39,6 @@ const DEFAULT_ADDRESS = {
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
 
-const HCM_BOUNDS = {
-  minLon: 106.58,
-  minLat: 10.69,
-  maxLon: 106.84,
-  maxLat: 10.88,
-};
-
 function isTransportAddress(address) {
   if (!address) return false;
   const lowerAddress = address.toUpperCase();
@@ -61,13 +48,26 @@ function isTransportAddress(address) {
 function preprocessAddress(address) {
   if (!address) return "";
   let cleanedAddress = address
-    .replace(/\b\d{10,11}\b/g, "")
-    .replace(/\([^)]*\)/g, "")
-    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "")
-    .replace(/[-–/]\s*\w+\s*$/, "")
-    .replace(/\s+/g, " ")
+    .replace(/\b\d{10,11}\b/g, "") // Loại bỏ số điện thoại
+    .replace(/\([^)]*\)/g, "") // Loại bỏ nội dung trong ngoặc
+    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "") // Loại bỏ thời gian giao hàng
+    .replace(/[-–/]\s*\w+\s*$/, "") // Loại bỏ ký tự cuối như "- Q1"
+    // Loại bỏ các từ khóa như "GỬI XE", "CHÀNH XE", "NHÀ XE", "XE KHÁCH", "xe"
+    .replace(/^(GỬI\s+)?(?:XE|CHÀNH\s+XE|NHÀ\s+XE|XE\s+KHÁCH)\s+/i, "")
+    .replace(/\s+/g, " ") // Chuẩn hóa khoảng trắng
     .trim();
   return cleanedAddress;
+}
+
+function normalizeTransportName(name) {
+  if (!name) return "";
+  let normalized = name
+    .toUpperCase()
+    .replace(/^(GỬI\s+)?(?:XE|CHÀNH\s+XE|NHÀ\s+XE|XE\s+KHÁCH)\s+/i, "")
+    .replace(/\s*-\s*(D|D1|F[5-8]|A[1-8]|B[1-8]|C[1-8]|G[1-8]|R7|I1)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized;
 }
 
 function isValidAddress(address) {
@@ -80,6 +80,10 @@ async function getValidOrderIds() {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute("SELECT id_order FROM orders");
     await connection.end();
+    console.log(
+      "Valid order IDs:",
+      rows.map((row) => row.id_order)
+    );
     return new Set(rows.map((row) => row.id_order));
   } catch (error) {
     console.error("Lỗi khi lấy danh sách id_order:", error.message);
@@ -87,68 +91,47 @@ async function getValidOrderIds() {
   }
 }
 
-function hasSpecificAddress(address) {
-  return /\d+.*\b(Đường|Phố|Phường|Quận|Huyện)\b/i.test(address);
-}
+async function findTransportCompany(address) {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const cleanedAddress = preprocessAddress(address);
 
-async function geocodeAddress(address, isTransport = false, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const params = {
-        key: TOMTOM_API_KEY,
-        countrySet: "VN",
-        language: "vi-VN",
-        limit: 1,
-      };
+    console.log("Tìm nhà xe với cleanedAddress:", cleanedAddress);
 
-      if (isTransport) {
-        params.minLon = HCM_BOUNDS.minLon;
-        params.minLat = HCM_BOUNDS.minLat;
-        params.maxLon = HCM_BOUNDS.maxLon;
-        params.maxLat = HCM_BOUNDS.maxLat;
-      }
-
-      const response = await axios.get(
-        "https://api.tomtom.com/search/2/search/" +
-          encodeURIComponent(address + ", Việt Nam") +
-          ".json",
-        { params }
-      );
-
-      if (response.data.results && response.data.results.length > 0) {
-        const result = response.data.results[0];
-        const formattedAddress = result.address.freeformAddress;
-
-        let district = null,
-          ward = null;
-
-        const addressComponents = result.address;
-        if (addressComponents.municipalitySubdivision) {
-          ward = addressComponents.municipalitySubdivision;
-        }
-        if (addressComponents.municipality) {
-          district = addressComponents.municipality;
-        }
-
-        return {
-          DcGiaohang: formattedAddress + ", Việt Nam",
-          District: district,
-          Ward: ward,
-          Source: "TomTom",
-        };
-      } else {
-        console.warn(
-          `TomTom API không tìm thấy kết quả cho địa chỉ: ${address}`
-        );
-        return null;
-      }
-    } catch (error) {
-      if (i === retries - 1) {
-        console.error(`Hết lượt thử cho địa chỉ ${address}:`, error.message);
-        return null;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+    if (!cleanedAddress) {
+      await connection.end();
+      console.log("Địa chỉ rỗng sau chuẩn hóa, bỏ qua.");
+      return null;
     }
+
+    // Truy vấn sử dụng LIKE với trường name, chuẩn hóa hoa/thường
+    const [rows] = await connection.execute(
+      `
+      SELECT standardized_address, district, ward, source
+      FROM transport_companies
+      WHERE UPPER(name) LIKE UPPER(?)
+      `,
+      [`%${cleanedAddress}%`]
+    );
+
+    console.log("Dữ liệu tìm thấy trong transport_companies:", rows);
+
+    await connection.end();
+
+    if (rows.length > 0) {
+      console.log("Tìm thấy nhà xe:", rows[0]);
+      return {
+        DcGiaohang: rows[0].standardized_address,
+        District: rows[0].district,
+        Ward: rows[0].ward,
+        Source: "TransportDB",
+      };
+    }
+    console.log(`Không tìm thấy nhà xe cho: ${cleanedAddress}`);
+    return null;
+  } catch (error) {
+    console.error("Lỗi khi tìm kiếm nhà xe:", error.message);
+    return null;
   }
 }
 
@@ -221,6 +204,7 @@ async function fetchAndSaveOrders() {
 async function standardizeAddresses(orders) {
   try {
     const standardizedOrders = [];
+    let transportResults = []; // Khởi tạo transportResults mặc định
     const limit = pLimit(5);
 
     const openAIPromises = orders.map((order) =>
@@ -255,70 +239,80 @@ async function standardizeAddresses(orders) {
           console.log(`Địa chỉ sau khi làm sạch rỗng: ${DcGiaohang}`);
           return {
             MaPX,
-            DcGiaohang: null,
+            DcGiaohang: DcGiaohang,
             District: null,
             Ward: null,
-            Source: null,
+            Source: "Original",
             isEmpty: false,
           };
         }
 
         const prompt = `
-        Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
+Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
 
-        Yêu cầu cụ thể:
-        1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
-        2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
-        3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
-        4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
-        5. Chỉ trả về null cho các trường DcGiaohang, District, Ward nếu địa chỉ không có thông tin cụ thể (ví dụ: chỉ có "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực).
-        6. Nếu địa chỉ thuộc tỉnh/thành phố khác TP. Hồ Chí Minh (ví dụ: Bình Phước, Bình Dương), phân tích đúng tỉnh/thành phố dựa trên thông tin.
+Yêu cầu cụ thể:
+1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
+2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
+3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
+4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
+5. Nếu thiếu thông tin Phường/Xã, hãy suy luận Phường/Xã phù hợp dựa trên tên đường và quận (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
+6. Nếu thiếu Tỉnh/Thành phố, giả định là "TP. Hồ Chí Minh" khi địa chỉ có quận (ví dụ: Q1, Q2) trừ khi có dấu hiệu rõ ràng thuộc tỉnh khác.
+7. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
+8. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
 
-        Ví dụ:
-        - "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
-          {
-            "MaPX": "X241019078-N",
-            "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
-            "District": "Quận 6",
-            "Ward": "Phường 1",
-            "Source": "OpenAI"
-          }
-        - "Gửi xe Kim Mã" → 
-          {
-            "MaPX": "X2410190xx-N",
-            "DcGiaohang": null,
-            "District": null,
-            "Ward": null,
-            "Source": null
-          }
-        - "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
-          {
-            "MaPX": "TEMP_1",
-            "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
-            "District": "Quận 1",
-            "Ward": "Phường Đa Kao",
-            "Source": "OpenAI"
-          }
+Ví dụ:
+- "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
+  {
+    "MaPX": "X241019078-N",
+    "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
+    "District": "Quận 6",
+    "Ward": "Phường 1",
+    "Source": "OpenAI"
+  }
+- "Gửi xe Kim Mã" → 
+  {
+    "MaPX": "X2410190xx-N",
+    "DcGiaohang": null,
+    "District": null,
+    "Ward": null,
+    "Source": null
+  }
+- "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
+  {
+    "MaPX": "TEMP_1",
+    "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
+    "District": "Quận 1",
+    "Ward": "Phường Đa Kao",
+    "Source": "OpenAI"
+  }
+- "174-176-178 Bùi Thị Xuân - Q1" → 
+  {
+    "MaPX": "TEMP_2",
+    "DcGiaohang": "174-178 Bùi Thị Xuân, Phường Tân Định, Quận 1, Hồ Chí Minh, Việt Nam",
+    "District": "Quận 1",
+    "Ward": "Phường Tân Định",
+    "Source": "OpenAI"
+  }
 
-        Đầu vào:
-        \`\`\`json
-        [${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
-        \`\`\`
+Đầu vào:
+\`\`\`json
+[${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
+\`\`\`
 
-        Đầu ra:
-        Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
-        \`\`\`json
-        [
-          {
-            "MaPX": "X2410190xx-N",
-            "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
-            "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
-            "Ward": "Phường/Xã hoặc null",
-            "Source": "OpenAI hoặc null"
-          }
-        ]
-        \`\`\`
-        `;
+Đầu ra:
+Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
+\`\`\`json
+[
+  {
+    "MaPX": "X2410190xx-N",
+    "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
+    "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
+    "Ward": "Phường/Xã hoặc null",
+    "Source": "OpenAI hoặc null"
+  }
+]
+\`\`\`
+`;
 
         try {
           const completion = await openai.chat.completions.create({
@@ -329,207 +323,184 @@ async function standardizeAddresses(orders) {
           let content = completion.choices[0].message.content;
           content = content.replace(/```json\n?|\n?```/g, "").trim();
           const result = JSON.parse(content);
-          return { ...result[0], Source: "OpenAI", isEmpty: false };
+          console.log(`OpenAI result for MaPX ${MaPX}:`, result[0]);
+          if (result[0].DcGiaohang) {
+            return {
+              ...result[0],
+              Source: "OpenAI",
+              isEmpty: false,
+            };
+          } else {
+            return {
+              MaPX,
+              DcGiaohang: DcGiaohang,
+              District: null,
+              Ward: null,
+              Source: "Original",
+              isEmpty: false,
+            };
+          }
         } catch (error) {
           console.error(`Lỗi khi gọi OpenAI cho MaPX ${MaPX}:`, error.message);
           return {
             MaPX,
-            DcGiaohang: null,
+            DcGiaohang: DcGiaohang,
             District: null,
             Ward: null,
-            Source: null,
+            Source: "Original",
             isEmpty: false,
           };
         }
       })
     );
 
-    const openAIResults = await Promise.all(openAIPromises);
-    standardizedOrders.push(...openAIResults);
+    const openAIPromisesResults = await Promise.all(openAIPromises);
 
-    const nullAddresses = openAIResults.filter(
-      (result) =>
-        (!result.DcGiaohang || !result.District || !result.Ward) &&
-        !result.isEmpty
+    // Lưu kết quả OpenAI vào orders_address
+    const validOrderIds = await getValidOrderIds();
+    const validOpenAIResults = openAIPromisesResults.filter((order) =>
+      validOrderIds.has(order.MaPX)
     );
 
-    console.log(`Số lượng địa chỉ cần gọi TomTom: ${nullAddresses.length}`);
-    console.log(
-      "Danh sách địa chỉ cần gọi TomTom:",
-      nullAddresses.map((order) => ({
-        MaPX: order.MaPX,
-        DcGiaohang: order.DcGiaohang,
-      }))
-    );
+    if (validOpenAIResults.length > 0) {
+      const connection = await mysql.createConnection(dbConfig);
+      const values = validOpenAIResults.map((order) => [
+        order.MaPX,
+        order.DcGiaohang,
+        order.District,
+        order.Ward,
+        order.Source,
+      ]);
 
-    const tomtomPromises = nullAddresses.map((order) =>
-      limit(async () => {
-        const { MaPX, DcGiaohang } = order;
-
-        const cleanedAddress = preprocessAddress(DcGiaohang);
-        if (!cleanedAddress) {
-          return {
-            MaPX,
-            DcGiaohang: null,
-            District: null,
-            Ward: null,
-            Source: null,
-            isEmpty: false,
-          };
-        }
-
-        if (hasSpecificAddress(cleanedAddress)) {
-          console.log(
-            `Thử lại OpenAI cho địa chỉ cụ thể: ${cleanedAddress} (MaPX: ${MaPX})`
-          );
-          const retryPrompt = `
-          Chuẩn hóa địa chỉ sau thành định dạng: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
-          Loại bỏ thông tin dư thừa và ưu tiên số nhà, tên đường, phường, quận.
-          Nếu không xác định được, trả về null.
-
-          Địa chỉ: "${cleanedAddress}"
-
-          Đầu ra:
-          \`\`\`json
-          {
-            "DcGiaohang": "Địa chỉ chuẩn hóa hoặc null",
-            "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
-            "Ward": "Phường/Xã hoặc null",
-            "Source": "OpenAI"
-          }
-          \`\`\`
-          `;
-
-          try {
-            const retryCompletion = await openai.chat.completions.create({
-              model: "gpt-4o",
-              messages: [{ role: "system", content: retryPrompt }],
-            });
-
-            let retryContent = retryCompletion.choices[0].message.content;
-            retryContent = retryContent
-              .replace(/```json\n?|\n?```/g, "")
-              .trim();
-            const retryResult = JSON.parse(retryContent);
-            if (retryResult.DcGiaohang) {
-              return {
-                MaPX,
-                DcGiaohang: retryResult.DcGiaohang,
-                District: retryResult.District,
-                Ward: retryResult.Ward,
-                Source: "OpenAI",
-                isEmpty: false,
-              };
-            }
-          } catch (error) {
-            console.error(
-              `Lỗi khi thử lại OpenAI cho MaPX ${MaPX}:`,
-              error.message
-            );
-          }
-        }
-
-        const isTransport = isTransportAddress(cleanedAddress);
-        console.log(
-          `Gọi TomTom API cho địa chỉ: ${cleanedAddress} (${
-            isTransport ? "Nhà xe, giới hạn TP. HCM" : "Không giới hạn"
-          })`
-        );
-        const geocodedResult = await geocodeAddress(
-          cleanedAddress,
-          isTransport
-        );
-        if (geocodedResult) {
-          return {
-            MaPX,
-            DcGiaohang: geocodedResult.DcGiaohang || null,
-            District: geocodedResult.District || null,
-            Ward: geocodedResult.Ward || null,
-            Source: geocodedResult.Source || "TomTom",
-            isEmpty: false,
-          };
-        }
-
-        return { ...order, Source: null, isEmpty: false };
-      })
-    );
-
-    const tomtomResults = await Promise.all(tomtomPromises);
-
-    for (const tomtomResult of tomtomResults) {
-      const index = standardizedOrders.findIndex(
-        (order) => order.MaPX === tomtomResult.MaPX
+      console.log("Lưu kết quả OpenAI vào orders_address:", values);
+      const [result] = await connection.query(
+        `INSERT INTO orders_address (id_order, address, district, ward, source) VALUES ? 
+         ON DUPLICATE KEY UPDATE 
+         address = VALUES(address), 
+         district = VALUES(district), 
+         ward = VALUES(ward), 
+         source = VALUES(source)`,
+        [values]
       );
-      if (index !== -1) {
-        standardizedOrders[index] = tomtomResult;
+      console.log(
+        "Số dòng ảnh hưởng khi lưu kết quả OpenAI vào orders_address:",
+        result.affectedRows
+      );
+
+      // Truy vấn orders_address để tìm các bản ghi có district và ward là null
+      const [nullDistrictWardOrders] = await connection.query(
+        `
+        SELECT id_order, address, source
+        FROM orders_address
+        WHERE district IS NULL AND ward IS NULL AND address IS NOT NULL
+        `
+      );
+      console.log(
+        "Các bản ghi orders_address có district và ward null:",
+        nullDistrictWardOrders
+      );
+
+      // Ánh xạ với transport_companies
+      const transportPromises = nullDistrictWardOrders.map((order) =>
+        limit(async () => {
+          const { id_order, address, source } = order;
+
+          console.log(
+            `Tìm nhà xe cho id_order ${id_order} với địa chỉ: ${address} (Source: ${source})`
+          );
+          const transportResult = await findTransportCompany(address);
+          if (transportResult) {
+            console.log(
+              `Tìm thấy nhà xe cho id_order ${id_order}:`,
+              transportResult
+            );
+            return {
+              MaPX: id_order,
+              DcGiaohang: transportResult.DcGiaohang,
+              District: transportResult.District,
+              Ward: transportResult.Ward,
+              Source: transportResult.Source,
+              isEmpty: false,
+            };
+          }
+          console.log(
+            `Không tìm thấy nhà xe trong transport_companies cho id_order ${id_order}`
+          );
+          return null; // Bỏ qua nếu không tìm thấy
+        })
+      );
+
+      transportResults = (await Promise.all(transportPromises)).filter(
+        (result) => result !== null
+      );
+
+      // Lưu kết quả ánh xạ vào orders_address và gộp vào standardizedOrders
+      if (transportResults.length > 0) {
+        const transportValues = transportResults.map((order) => [
+          order.MaPX,
+          order.DcGiaohang,
+          order.District,
+          order.Ward,
+          order.Source,
+        ]);
+
+        console.log(
+          "Lưu kết quả ánh xạ transport_companies vào orders_address:",
+          transportValues
+        );
+        const [transportInsertResult] = await connection.query(
+          `INSERT INTO orders_address (id_order, address, district, ward, source) VALUES ? 
+           ON DUPLICATE KEY UPDATE 
+           address = VALUES(address), 
+           district = VALUES(district), 
+           ward = VALUES(ward), 
+           source = VALUES(source)`,
+          [transportValues]
+        );
+        console.log(
+          "Số dòng ảnh hưởng khi lưu kết quả ánh xạ vào orders_address:",
+          transportInsertResult.affectedRows
+        );
+
+        // Gộp transportResults vào standardizedOrders
+        for (const result of transportResults) {
+          const index = standardizedOrders.findIndex(
+            (order) => order.MaPX === result.MaPX
+          );
+          if (index !== -1) {
+            standardizedOrders[index] = result;
+          } else {
+            standardizedOrders.push(result);
+          }
+        }
+      } else {
+        console.log("Không có bản ghi nào được ánh xạ từ transport_companies.");
       }
+
+      await connection.end();
     }
 
-    console.log(
-      "Đã chuẩn hóa địa chỉ:",
-      JSON.stringify(standardizedOrders, null, 2)
-    );
-    return standardizedOrders;
+    // Trả về tất cả kết quả OpenAI và ánh xạ
+    return validOpenAIResults.concat(transportResults);
   } catch (error) {
     console.error("Lỗi trong standardizeAddresses:", error.message);
     throw error;
   }
 }
 
-async function updateStandardizedAddresses(data, isTransport = false) {
+async function updateStandardizedAddresses(data) {
   try {
     const connection = await mysql.createConnection(dbConfig);
 
-    if (isTransport) {
-      const values = data.map((company) => [
-        company.name,
-        company.address,
-        company.standardizedAddress,
-        company.district,
-        company.ward,
-        company.phone,
-        company.departureTime,
-        company.status,
-        company.note,
-        company.source,
-      ]);
+    const validOrderIds = await getValidOrderIds();
+    const validOrders = data.filter((order) => validOrderIds.has(order.MaPX));
 
-      const [result] = await connection.query(
-        `INSERT INTO transport_companies 
-        (name, address, standardized_address, district, ward, phone, departure_time, status, note, source) 
-        VALUES ? 
-        ON DUPLICATE KEY UPDATE 
-        address = VALUES(address), 
-        standardized_address = VALUES(standardized_address), 
-        district = VALUES(district), 
-        ward = VALUES(ward), 
-        phone = VALUES(phone), 
-        departure_time = VALUES(departure_time), 
-        status = VALUES(status), 
-        note = VALUES(note), 
-        source = VALUES(source)`,
-        [values]
-      );
+    console.log(
+      `Số lượng đơn hàng hợp lệ để lưu vào orders_address: ${validOrders.length}`
+    );
+    console.log("Valid orders:", JSON.stringify(validOrders, null, 2));
 
-      console.log(
-        "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (transport_companies):",
-        result.affectedRows
-      );
-    } else {
-      const validOrderIds = await getValidOrderIds();
-      const validOrders = data.filter((order) =>
-        validOrderIds.has(order.MaPX)
-      );
-
-      console.log(
-        `Số lượng đơn hàng hợp lệ để lưu vào orders_address: ${validOrders.length}`
-      );
-      if (validOrders.length === 0) {
-        console.warn("Không có đơn hàng hợp lệ để lưu vào orders_address");
-        await connection.end();
-        return;
-      }
-
+    if (validOrders.length > 0) {
       const values = validOrders.map((order) => [
         order.MaPX,
         order.DcGiaohang,
@@ -538,9 +509,15 @@ async function updateStandardizedAddresses(data, isTransport = false) {
         order.Source,
       ]);
 
+      console.log("Values to insert into orders_address:", values);
+
       const [result] = await connection.query(
-        "INSERT INTO orders_address (id_order, address, district, ward, source) VALUES ? " +
-          "ON DUPLICATE KEY UPDATE address = VALUES(address), district = VALUES(district), ward = VALUES(ward), source = VALUES(source)",
+        `INSERT INTO orders_address (id_order, address, district, ward, source) VALUES ? 
+         ON DUPLICATE KEY UPDATE 
+         address = VALUES(address), 
+         district = VALUES(district), 
+         ward = VALUES(ward), 
+         source = VALUES(source)`,
         [values]
       );
       console.log(
@@ -557,6 +534,8 @@ async function updateStandardizedAddresses(data, isTransport = false) {
           invalidOrders.map((order) => order.MaPX)
         );
       }
+    } else {
+      console.warn("Không có đơn hàng hợp lệ để lưu vào orders_address");
     }
 
     await connection.end();
@@ -601,23 +580,28 @@ async function groupOrders() {
       GROUP BY district
     `);
 
-    const parsedResults = results.map((result) => {
-      let wards = result.wards;
-      if (typeof wards === "string") {
-        try {
-          wards = JSON.parse(wards);
-        } catch (error) {
-          console.error(`Lỗi phân tích JSON cho quận ${result.district}:`, error.message);
-          wards = [];
+    const parsedResults = results
+      .map((result) => {
+        let wards = result.wards;
+        if (typeof wards === "string") {
+          try {
+            wards = JSON.parse(wards);
+          } catch (error) {
+            console.error(
+              `Lỗi phân tích JSON cho quận ${result.district}:`,
+              error.message
+            );
+            wards = [];
+          }
         }
-      }
-      wards = wards.filter((ward) => ward.orders && ward.orders.length > 0);
+        wards = wards.filter((ward) => ward.orders && ward.orders.length > 0);
 
-      return {
-        district: result.district,
-        wards: wards,
-      };
-    }).filter((district) => district.wards.length > 0);
+        return {
+          district: result.district,
+          wards: wards,
+        };
+      })
+      .filter((district) => district.wards.length > 0);
 
     await connection.end();
     console.log("Số lượng quận có đơn hàng:", parsedResults.length);
@@ -636,9 +620,9 @@ async function main() {
     const orders = await fetchAndSaveOrders();
     console.log("Đã lưu đơn hàng:", orders.length);
 
-    console.log("Bước 2: Chuẩn hóa địa chỉ...");
+    console.log("Bước 2: Chuẩn hóa và ánh xạ địa chỉ...");
     const standardizedOrders = await standardizeAddresses(orders);
-    console.log("Đã chuẩn hóa đơn hàng:", standardizedOrders.length);
+    console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
 
     console.log("Bước 3: Cập nhật địa chỉ chuẩn hóa...");
     await updateStandardizedAddresses(standardizedOrders);
@@ -656,4 +640,9 @@ async function main() {
   }
 }
 
-module.exports = { main, groupOrders, standardizeAddresses, updateStandardizedAddresses };
+module.exports = {
+  main,
+  groupOrders,
+  standardizeAddresses,
+  updateStandardizedAddresses,
+};
