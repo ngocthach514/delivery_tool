@@ -1,5 +1,5 @@
 require('dotenv').config();
-console.log('OPENAI_API_KEY (delivery-tool.js):', process.env.OPENAI_API_KEY); // Thêm log để kiểm tra
+console.log('OPENAI_API_KEY (delivery-tool.js):', process.env.OPENAI_API_KEY);
 
 const axios = require("axios");
 const mysql = require("mysql2/promise");
@@ -13,7 +13,7 @@ const dbConfig = {
   host: process.env.DB_HOST || "localhost",
   user: process.env.DB_USER || "root",
   password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_DATABASE || "delivery_data", // Sử dụng DB_DATABASE từ .env
+  database: process.env.DB_DATABASE || "delivery_data",
 };
 
 const openai = new OpenAI({
@@ -22,7 +22,6 @@ const openai = new OpenAI({
 
 const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
 
-// Kiểm tra API keys
 if (!process.env.OPENAI_API_KEY) {
   console.error("Lỗi: Thiếu OPENAI_API_KEY trong biến môi trường");
   process.exit(1);
@@ -46,7 +45,6 @@ const DEFAULT_ADDRESS = {
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
 
-// Bounding box cho nội thành TP. Hồ Chí Minh
 const HCM_BOUNDS = {
   minLon: 106.58,
   minLat: 10.69,
@@ -54,33 +52,29 @@ const HCM_BOUNDS = {
   maxLat: 10.88,
 };
 
-// Hàm kiểm tra địa chỉ liên quan đến nhà xe
 function isTransportAddress(address) {
   if (!address) return false;
   const lowerAddress = address.toUpperCase();
   return TRANSPORT_KEYWORDS.some((keyword) => lowerAddress.includes(keyword));
 }
 
-// Hàm tiền xử lý địa chỉ để loại bỏ thông tin dư thừa
 function preprocessAddress(address) {
   if (!address) return "";
   let cleanedAddress = address
-    .replace(/\b\d{10,11}\b/g, "") // Loại bỏ số điện thoại (10-11 chữ số)
-    .replace(/\([^)]*\)/g, "") // Loại bỏ nội dung trong ngoặc
-    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "") // Loại bỏ ghi chú thời gian
-    .replace(/[-–/]\s*\w+\s*$/, "") // Loại bỏ tên người ở cuối
-    .replace(/\s+/g, " ") // Chuẩn hóa khoảng trắng
+    .replace(/\b\d{10,11}\b/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "")
+    .replace(/[-–/]\s*\w+\s*$/, "")
+    .replace(/\s+/g, " ")
     .trim();
   return cleanedAddress;
 }
 
-// Hàm kiểm tra địa chỉ hợp lệ
 function isValidAddress(address) {
   if (!address || address.trim() === "") return false;
   return true;
 }
 
-// Hàm kiểm tra MaPX tồn tại trong bảng orders
 async function getValidOrderIds() {
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -93,12 +87,10 @@ async function getValidOrderIds() {
   }
 }
 
-// Hàm kiểm tra địa chỉ có thông tin cụ thể (số nhà, tên đường)
 function hasSpecificAddress(address) {
   return /\d+.*\b(Đường|Phố|Phường|Quận|Huyện)\b/i.test(address);
 }
 
-// Hàm gọi TomTom Search API (Fuzzy Search) để geocoding
 async function geocodeAddress(address, isTransport = false, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -489,7 +481,6 @@ async function updateStandardizedAddresses(data, isTransport = false) {
     const connection = await mysql.createConnection(dbConfig);
 
     if (isTransport) {
-      // Lưu vào bảng transport_companies
       const values = data.map((company) => [
         company.name,
         company.address,
@@ -525,7 +516,6 @@ async function updateStandardizedAddresses(data, isTransport = false) {
         result.affectedRows
       );
     } else {
-      // Lưu vào bảng orders_address
       const validOrderIds = await getValidOrderIds();
       const validOrders = data.filter((order) =>
         validOrderIds.has(order.MaPX)

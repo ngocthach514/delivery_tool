@@ -5,7 +5,6 @@ const { main, groupOrders } = require('./delivery-tool');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Endpoint to get grouped orders (only step 4)
 app.get('/grouped-orders', async (req, res) => {
     try {
         console.time('grouped-orders');
@@ -17,7 +16,6 @@ app.get('/grouped-orders', async (req, res) => {
     }
 });
 
-// Endpoint to run full processing (steps 1-4)
 app.get('/process-orders', async (req, res) => {
     try {
         console.time('process-orders');
