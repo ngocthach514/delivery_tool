@@ -10,8 +10,8 @@ const auth = new google.auth.GoogleAuth({
 
 const sheets = google.sheets({ version: 'v4', auth });
 
-const SPREADSHEET_ID = '12KF-YT8YBKr6fk3_DNj10pay1BfVZML7nvmr0CkEUM4';
-const RANGE = 'A5:G';
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const RANGE = process.env.RANGE;
 
 async function getAllSheetNames(spreadsheetId) {
   try {

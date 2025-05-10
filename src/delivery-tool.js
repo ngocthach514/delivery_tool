@@ -1,5 +1,12 @@
 require("dotenv").config();
-console.log("OPENAI_API_KEY (delivery-tool.js):", process.env.OPENAI_API_KEY);
+console.log(
+  "OPENAI_API_KEY (delivery-tool.js):",
+  process.env.OPENAI_API_KEY ? "Đã thiết lập" : "Chưa thiết lập"
+);
+console.log(
+  "TOMTOM_API_KEY (delivery-tool.js):",
+  process.env.TOMTOM_API_KEY ? "Đã thiết lập" : "Chưa thiết lập"
+);
 
 const axios = require("axios");
 const mysql = require("mysql2/promise");
@@ -8,6 +15,24 @@ const pLimitModule = require("p-limit");
 
 const pLimit =
   typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
+
+// Cơ chế retry thủ công
+async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
+  let attempt = 0;
+  while (attempt < retries) {
+    try {
+      return await fn();
+    } catch (error) {
+      attempt++;
+      if (attempt >= retries) {
+        throw error;
+      }
+      const delay = Math.min(minTimeout * Math.pow(2, attempt - 1), maxTimeout);
+      console.log(`Thử lại sau ${delay}ms (lần ${attempt}/${retries})`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
 
 const dbConfig = {
   host: process.env.DB_HOST || "localhost",
@@ -25,16 +50,39 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
-const API_1 =
-  "http://192.168.117.222:8096/NKC/Delivery/GetVoucher?type=chogiao";
-const API_2_BASE = "http://192.168.117.222:8096/NKC/Web/SearchVoucher";
+if (!process.env.TOMTOM_API_KEY) {
+  console.error("Lỗi: Thiếu TOMTOM_API_KEY trong biến môi trường");
+  process.exit(1);
+}
 
+if (!process.env.API_1_URL) {
+  console.error("Lỗi: Thiếu API_1_URL trong biến môi trường");
+  process.exit(1);
+}
+
+if (!process.env.API_2_BASE_URL) {
+  console.error("Lỗi: Thiếu API_2_BASE_URL trong biến môi trường");
+  process.exit(1);
+}
+
+if (!process.env.WAREHOUSE_ADDRESS) {
+  console.error("Lỗi: Thiếu WAREHOUSE_ADDRESS trong biến môi trường");
+  process.exit(1);
+}
+
+const API_1 = process.env.API_1_URL;
+const API_2_BASE = process.env.API_2_BASE_URL;
+const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
+const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
 const DEFAULT_ADDRESS = {
   DcGiaohang:
+    process.env.DEFAULT_ADDRESS ||
     "108/E8 Đường Cộng Hòa, Phường 4, Quận Tân Bình, Hồ Chí Minh, Việt Nam",
   District: "Quận Tân Bình",
   Ward: "Phường 4",
   Source: "Default",
+  Distance: 0,
+  TravelTime: 0,
 };
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
@@ -48,13 +96,12 @@ function isTransportAddress(address) {
 function preprocessAddress(address) {
   if (!address) return "";
   let cleanedAddress = address
-    .replace(/\b\d{10,11}\b/g, "") // Loại bỏ số điện thoại
-    .replace(/\([^)]*\)/g, "") // Loại bỏ nội dung trong ngoặc
-    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "") // Loại bỏ thời gian giao hàng
-    .replace(/[-–/]\s*\w+\s*$/, "") // Loại bỏ ký tự cuối như "- Q1"
-    // Loại bỏ các từ khóa như "GỬI XE", "CHÀNH XE", "NHÀ XE", "XE KHÁCH", "xe"
-    .replace(/^(GỬI\s+)?(?:XE|CHÀNH\s+XE|NHÀ\s+XE|XE\s+KHÁCH)\s+/i, "")
-    .replace(/\s+/g, " ") // Chuẩn hóa khoảng trắng
+    .replace(/\b\d{10,11}\b/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/Chiều *: *Giao trước \d{1,2}(g|h)\d{0,2}/gi, "")
+    .replace(/[-–/]\s*\w+\s*$/, "")
+    .replace(/\s*-\s*/g, "-")
+    .replace(/\s+/g, " ")
     .trim();
   return cleanedAddress;
 }
@@ -75,6 +122,16 @@ function isValidAddress(address) {
   return true;
 }
 
+function isInHoChiMinhCity(address) {
+  if (!address) return false;
+  const lowerAddress = address.toLowerCase();
+  return (
+    lowerAddress.includes("hồ chí minh") ||
+    lowerAddress.includes("tp. hồ chí minh") ||
+    !lowerAddress.includes("hà nội")
+  );
+}
+
 async function getValidOrderIds() {
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -91,12 +148,173 @@ async function getValidOrderIds() {
   }
 }
 
+async function checkRouteCache(originAddress, destinationAddress) {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [rows] = await connection.execute(
+      `
+      SELECT distance, travel_time
+      FROM route_cache
+      WHERE origin_address = ? AND destination_address = ?
+      `,
+      [originAddress, destinationAddress]
+    );
+    await connection.end();
+
+    if (rows.length > 0) {
+      console.log(
+        `Lấy tuyến đường từ cache cho ${originAddress} đến ${destinationAddress}`
+      );
+      return { distance: rows[0].distance, travelTime: rows[0].travel_time };
+    }
+    return null;
+  } catch (error) {
+    console.error("Lỗi khi kiểm tra route_cache:", error.message);
+    return null;
+  }
+}
+
+async function saveRouteToCache(
+  originAddress,
+  destinationAddress,
+  distance,
+  travelTime
+) {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    await connection.execute(
+      `
+      INSERT INTO route_cache (origin_address, destination_address, distance, travel_time, calculated_at)
+      VALUES (?, ?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE
+      distance = VALUES(distance),
+      travel_time = VALUES(travel_time),
+      calculated_at = NOW()
+      `,
+      [originAddress, destinationAddress, distance, travelTime]
+    );
+    await connection.end();
+    console.log(
+      `Lưu tuyến đường vào cache: ${originAddress} đến ${destinationAddress}`
+    );
+  } catch (error) {
+    console.error("Lỗi khi lưu route_cache:", error.message);
+  }
+}
+
+async function geocodeAddress(address) {
+  const run = async () => {
+    const response = await axios.get(
+      `${process.env.TOMTOM_GEOCODE_API_URL}/${encodeURIComponent(
+        address
+      )}.json`,
+      {
+        params: {
+          key: TOMTOM_API_KEY,
+          countrySet: "VN",
+          limit: 1,
+        },
+      }
+    );
+
+    if (response.data.results && response.data.results.length > 0) {
+      const { lat, lon } = response.data.results[0].position;
+      return { lat, lon };
+    }
+    console.log(`Không tìm thấy tọa độ cho địa chỉ: ${address}`);
+    return null;
+  };
+
+  try {
+    return await retry(run);
+  } catch (error) {
+    console.error(
+      `Lỗi khi gọi TomTom Geocoding API cho ${address}:`,
+      error.message
+    );
+    return null;
+  }
+}
+
+async function calculateRoute(originAddress, destinationAddress) {
+  if (!isInHoChiMinhCity(destinationAddress)) {
+    console.log(
+      `Bỏ qua tuyến đường cho ${destinationAddress}: Ngoài TP. Hồ Chí Minh`
+    );
+    return { distance: 0, travelTime: 0 };
+  }
+
+  const cacheResult = await checkRouteCache(originAddress, destinationAddress);
+  if (cacheResult) {
+    return cacheResult;
+  }
+
+  const run = async () => {
+    const origin = await geocodeAddress(originAddress);
+    const destination = await geocodeAddress(destinationAddress);
+
+    if (!origin || !destination) {
+      console.log(
+        `Không thể tính tuyến đường từ ${originAddress} đến ${destinationAddress}: Thiếu tọa độ`
+      );
+      return { distance: 0, travelTime: 0 };
+    }
+
+    const response = await axios.get(
+      `${process.env.TOMTOM_ROUTING_API_URL}/${origin.lat},${origin.lon}:${destination.lat},${destination.lon}/json`,
+      {
+        params: {
+          key: TOMTOM_API_KEY,
+          travelMode: "car",
+          traffic: "live",
+        },
+      }
+    );
+
+    if (response.data.routes && response.data.routes.length > 0) {
+      const route = response.data.routes[0];
+      const distance = route.summary.lengthInMeters / 1000;
+      const travelTime = Math.ceil(route.summary.travelTimeInSeconds / 60); // Chuyển sang phút, làm tròn lên
+      console.log(
+        `Tuyến đường từ ${originAddress} đến ${destinationAddress}: ${distance} km, ${travelTime} phút`
+      );
+      return { distance, travelTime };
+    }
+
+    console.log(
+      `Không tìm thấy tuyến đường từ ${originAddress} đến ${destinationAddress}`
+    );
+    return { distance: 0, travelTime: 0 };
+  };
+
+  try {
+    const result = await retry(run);
+    if (result.distance !== 0 || result.travelTime !== 0) {
+      await saveRouteToCache(
+        originAddress,
+        destinationAddress,
+        result.distance,
+        result.travelTime
+      );
+    }
+    return result;
+  } catch (error) {
+    console.error(
+      `Lỗi khi gọi TomTom Routing API từ ${originAddress} đến ${destinationAddress}:`,
+      error.message
+    );
+    return { distance: 0, travelTime: 0 };
+  }
+}
+
 async function findTransportCompany(address) {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const cleanedAddress = preprocessAddress(address);
+    const normalizedAddress = normalizeTransportName(cleanedAddress);
 
     console.log("Tìm nhà xe với cleanedAddress:", cleanedAddress);
+    console.log("normalizedAddress:", normalizedAddress);
 
     if (!cleanedAddress) {
       await connection.end();
@@ -104,17 +322,14 @@ async function findTransportCompany(address) {
       return null;
     }
 
-    // Truy vấn sử dụng LIKE với trường name, chuẩn hóa hoa/thường
     const [rows] = await connection.execute(
       `
       SELECT standardized_address, district, ward, source
       FROM transport_companies
-      WHERE UPPER(name) LIKE UPPER(?)
+      WHERE name LIKE ? OR name LIKE ?
       `,
-      [`%${cleanedAddress}%`]
+      [`%${cleanedAddress}%`, `%${normalizedAddress}%`]
     );
-
-    console.log("Dữ liệu tìm thấy trong transport_companies:", rows);
 
     await connection.end();
 
@@ -204,8 +419,8 @@ async function fetchAndSaveOrders() {
 async function standardizeAddresses(orders) {
   try {
     const standardizedOrders = [];
-    let transportResults = []; // Khởi tạo transportResults mặc định
-    const limit = pLimit(5);
+    let transportResults = [];
+    const limit = pLimit(10);
 
     const openAIPromises = orders.map((order) =>
       limit(async () => {
@@ -248,71 +463,68 @@ async function standardizeAddresses(orders) {
         }
 
         const prompt = `
-Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
+        Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
 
-Yêu cầu cụ thể:
-1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
-2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
-3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
-4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
-5. Nếu thiếu thông tin Phường/Xã, hãy suy luận Phường/Xã phù hợp dựa trên tên đường và quận (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
-6. Nếu thiếu Tỉnh/Thành phố, giả định là "TP. Hồ Chí Minh" khi địa chỉ có quận (ví dụ: Q1, Q2) trừ khi có dấu hiệu rõ ràng thuộc tỉnh khác.
-7. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
-8. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
+        Yêu cầu cụ thể:
+        1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
+        2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
+        3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
+        4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
+        5. Nếu thiếu thông tin Phường/Xã, suy luận Phường/Xã phù hợp dựa trên tên đường và quận (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
+        6. Nếu thiếu Tỉnh/Thành phố, giả định là "TP. Hồ Chí Minh" khi địa chỉ có quận (ví dụ: Q1, Q2) trừ khi có dấu hiệu rõ ràng thuộc tỉnh khác.
+        7. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
+        8. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
 
-Ví dụ:
-- "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
-  {
-    "MaPX": "X241019078-N",
-    "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
-    "District": "Quận 6",
-    "Ward": "Phường 1",
-    "Source": "OpenAI"
-  }
-- "Gửi xe Kim Mã" → 
-  {
-    "MaPX": "X2410190xx-N",
-    "DcGiaohang": null,
-    "District": null,
-    "Ward": null,
-    "Source": null
-  }
-- "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
-  {
-    "MaPX": "TEMP_1",
-    "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
-    "District": "Quận 1",
-    "Ward": "Phường Đa Kao",
-    "Source": "OpenAI"
-  }
-- "174-176-178 Bùi Thị Xuân - Q1" → 
-  {
-    "MaPX": "TEMP_2",
-    "DcGiaohang": "174-178 Bùi Thị Xuân, Phường Tân Định, Quận 1, Hồ Chí Minh, Việt Nam",
-    "District": "Quận 1",
-    "Ward": "Phường Tân Định",
-    "Source": "OpenAI"
-  }
+        Ví dụ:
+        - "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
+          {
+            "MaPX": "X241019078-N",
+            "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
+            "District": "Quận 6",
+            "Ward": "Phường 1",
+            "Source": "OpenAI"
+          }
+        - "Gửi xe Kim Mã" → 
+          {
+            "MaPX": "X2410190xx-N",
+            "DcGiaohang": null,
+            "District": null,
+            "Ward": null,
+            "Source": null
+          }
+        - "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
+          {
+            "MaPX": "TEMP_1",
+            "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
+            "District": "Quận 1",
+            "Ward": "Phường Đa Kao",
+            "Source": "OpenAI"
+          }
+        - "174-176-178 Bùi Thị Xuân - Q1" → 
+          {
+            "MaPX": "TEMP_2",
+            "DcGiaohang": "174-178 Bùi Thị Xuân, Phường Phạm Ngũ Lão, Quận 1, Hồ Chí Minh, Việt Nam",
+            "District": "Quận 1",
+            "Ward": "Phường Phạm Ngũ Lão",
+            "Source": "OpenAI"
+          }
 
-Đầu vào:
-\`\`\`json
-[${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
-\`\`\`
+        Đầu vào:
+        \`\`\`json
+        [${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
+        \`\`\`
 
-Đầu ra:
-Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
-\`\`\`json
-[
-  {
-    "MaPX": "X2410190xx-N",
-    "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
-    "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
-    "Ward": "Phường/Xã hoặc null",
-    "Source": "OpenAI hoặc null"
-  }
-]
-\`\`\`
-`;
+        Đầu ra:
+        Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
+        \`\`\`json
+        [
+          {
+            "MaPX": "X2410190xx-N",
+            "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
+            "District": "Quận/HApprentice cùng lúc, hãy đảm bảo rằng bạn không bỏ qua bất kỳ ví dụ nào trong số này, vì tất cả chúng đều được sử dụng trong lời nhắc.
+
+        **Hãy để ý các ví dụ và làm theo định dạng đầu ra chính xác như được hiển thị.**
+        `;
 
         try {
           const completion = await openai.chat.completions.create({
@@ -324,6 +536,7 @@ Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
           content = content.replace(/```json\n?|\n?```/g, "").trim();
           const result = JSON.parse(content);
           console.log(`OpenAI result for MaPX ${MaPX}:`, result[0]);
+
           if (result[0].DcGiaohang) {
             return {
               ...result[0],
@@ -426,7 +639,7 @@ Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
           console.log(
             `Không tìm thấy nhà xe trong transport_companies cho id_order ${id_order}`
           );
-          return null; // Bỏ qua nếu không tìm thấy
+          return null;
         })
       );
 
@@ -484,6 +697,77 @@ Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
     return validOpenAIResults.concat(transportResults);
   } catch (error) {
     console.error("Lỗi trong standardizeAddresses:", error.message);
+    throw error;
+  }
+}
+
+async function calculateDistances() {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [orders] = await connection.query(
+      `
+      SELECT id_order, address
+      FROM orders_address
+      WHERE address IS NOT NULL
+      `
+    );
+    console.log("Các đơn hàng để tính khoảng cách:", orders.length);
+
+    // Nhóm địa chỉ trùng lặp
+    const addressMap = {};
+    orders.forEach((order) => {
+      if (!addressMap[order.address]) {
+        addressMap[order.address] = [];
+      }
+      addressMap[order.address].push(order.id_order);
+    });
+
+    const uniqueAddresses = Object.keys(addressMap);
+    console.log("Số địa chỉ duy nhất:", uniqueAddresses.length);
+
+    const limit = pLimit(2); // Giảm xuống 2 để tránh lỗi 429
+    const routePromises = uniqueAddresses.map((address) =>
+      limit(async () => {
+        console.log(`Tính tuyến đường cho địa chỉ: ${address}`);
+        const route = await calculateRoute(WAREHOUSE_ADDRESS, address);
+        return { address, ...route };
+      })
+    );
+
+    const routeResults = await Promise.all(routePromises);
+    console.log("Kết quả tính khoảng cách:", routeResults);
+
+    const updateValues = [];
+    routeResults.forEach((result) => {
+      const { address, distance, travelTime } = result;
+      addressMap[address].forEach((id_order) => {
+        updateValues.push([id_order, distance, travelTime]);
+      });
+    });
+
+    if (updateValues.length > 0) {
+      console.log(
+        "Cập nhật khoảng cách và thời gian vào orders_address:",
+        updateValues
+      );
+      const [updateResult] = await connection.query(
+        `
+        INSERT INTO orders_address (id_order, distance, travel_time) VALUES ? 
+        ON DUPLICATE KEY UPDATE 
+        distance = VALUES(distance), 
+        travel_time = VALUES(travel_time)
+        `,
+        [updateValues]
+      );
+      console.log(
+        "Số dòng ảnh hưởng khi cập nhật khoảng cách và thời gian:",
+        updateResult.affectedRows
+      );
+    }
+
+    await connection.end();
+  } catch (error) {
+    console.error("Lỗi trong calculateDistances:", error.message);
     throw error;
   }
 }
@@ -560,7 +844,9 @@ async function groupOrders() {
                 JSON_OBJECT(
                   'id_order', id_order,
                   'address', address,
-                  'source', source
+                  'source', source,
+                  'distance', distance,
+                  'travel_time', travel_time
                 )
               )
               FROM orders_address sub
@@ -628,7 +914,11 @@ async function main() {
     await updateStandardizedAddresses(standardizedOrders);
     console.log("Đã cập nhật địa chỉ chuẩn hóa");
 
-    console.log("Bước 4: Nhóm đơn hàng...");
+    console.log("Bước 4: Tính toán khoảng cách và thời gian...");
+    await calculateDistances();
+    console.log("Đã tính toán khoảng cách và thời gian");
+
+    console.log("Bước 5: Nhóm đơn hàng...");
     const groupedOrders = await groupOrders();
     console.log("Đã nhóm đơn hàng:", JSON.stringify(groupedOrders, null, 2));
 
@@ -645,4 +935,5 @@ module.exports = {
   groupOrders,
   standardizeAddresses,
   updateStandardizedAddresses,
+  calculateDistances,
 };
