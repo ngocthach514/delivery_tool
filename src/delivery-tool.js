@@ -521,9 +521,12 @@ async function standardizeAddresses(orders) {
           {
             "MaPX": "X2410190xx-N",
             "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
-            "District": "Quận/HApprentice cùng lúc, hãy đảm bảo rằng bạn không bỏ qua bất kỳ ví dụ nào trong số này, vì tất cả chúng đều được sử dụng trong lời nhắc.
-
-        **Hãy để ý các ví dụ và làm theo định dạng đầu ra chính xác như được hiển thị.**
+            "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
+            "Ward": "Phường/Xã hoặc null",
+            "Source": "OpenAI hoặc null"
+          }
+        ]
+        \`\`\`
         `;
 
         try {
@@ -829,76 +832,82 @@ async function updateStandardizedAddresses(data) {
   }
 }
 
-async function groupOrders() {
+async function groupOrders(page = 1) {
   try {
     const connection = await mysql.createConnection(dbConfig);
+    const pageSize = 10;
+    const offset = (page - 1) * pageSize;
 
-    const [results] = await connection.execute(`
+    // Kiểm tra page hợp lệ
+    if (!Number.isInteger(page) || page < 1) {
+      throw new Error("Page phải là số nguyên dương");
+    }
+
+    // Đếm tổng số đơn hàng hợp lệ
+    const [totalResult] = await connection.execute(
+      `
+      SELECT COUNT(*) as total
+      FROM orders_address
+      WHERE address IS NOT NULL 
+        AND distance IS NOT NULL 
+        AND distance > 0
+      `
+    );
+    const totalOrders = totalResult[0].total;
+    const totalPages = Math.ceil(totalOrders / pageSize);
+
+    // Log debug
+    console.log(
+      `groupOrders: page=${page}, pageSize=${pageSize}, offset=${offset}`
+    );
+
+    // Truy vấn không dùng placeholder
+    const query = `
       SELECT 
-        district,
-        JSON_ARRAYAGG(
-          JSON_OBJECT(
-            'ward', ward,
-            'orders', COALESCE((
-              SELECT JSON_ARRAYAGG(
-                JSON_OBJECT(
-                  'id_order', id_order,
-                  'address', address,
-                  'source', source,
-                  'distance', distance,
-                  'travel_time', travel_time
-                )
-              )
-              FROM orders_address sub
-              WHERE sub.district = oa.district 
-                AND sub.ward = oa.ward
-                AND sub.id_order IS NOT NULL
-                AND sub.address IS NOT NULL
-            ), JSON_ARRAY())
-          )
-        ) as wards
-      FROM (
-        SELECT DISTINCT district, ward
-        FROM orders_address
-        WHERE district IS NOT NULL 
-          AND ward IS NOT NULL
-      ) oa
-      GROUP BY district
-    `);
+        id_order,
+        address,
+        source,
+        distance,
+        travel_time
+      FROM orders_address
+      WHERE address IS NOT NULL 
+        AND distance IS NOT NULL 
+        AND distance > 0
+      ORDER BY distance ASC, travel_time ASC
+      LIMIT ${parseInt(pageSize)} OFFSET ${parseInt(offset)}
+    `;
 
-    const parsedResults = results
-      .map((result) => {
-        let wards = result.wards;
-        if (typeof wards === "string") {
-          try {
-            wards = JSON.parse(wards);
-          } catch (error) {
-            console.error(
-              `Lỗi phân tích JSON cho quận ${result.district}:`,
-              error.message
-            );
-            wards = [];
-          }
-        }
-        wards = wards.filter((ward) => ward.orders && ward.orders.length > 0);
+    const [results] = await connection.execute(query);
 
-        return {
-          district: result.district,
-          wards: wards,
-        };
-      })
-      .filter((district) => district.wards.length > 0);
+    const parsedResults = results.map((row) => ({
+      id_order: row.id_order,
+      address: row.address,
+      source: row.source,
+      distance: row.distance,
+      travel_time: row.travel_time,
+    }));
 
     await connection.end();
-    console.log("Số lượng quận có đơn hàng:", parsedResults.length);
-    return parsedResults;
+
+    const response = {
+      totalOrders,
+      totalPages,
+      currentPage: page,
+      orders: parsedResults,
+    };
+
+    console.log(`Số đơn hàng trang ${page}:`, parsedResults.length);
+    console.log(
+      `Tổng số đơn hàng: ${totalOrders}, Tổng số trang: ${totalPages}`
+    );
+    return response;
   } catch (error) {
-    console.error("Lỗi trong groupOrders:", error.message);
+    console.error("Lỗi trong groupOrders:", error.message, error.stack);
     throw error;
   }
 }
 
-async function main() {
+async function main(page = 1) {
   try {
     console.log("Khởi động công cụ giao hàng...");
 
@@ -918,9 +927,9 @@ async function main() {
     await calculateDistances();
     console.log("Đã tính toán khoảng cách và thời gian");
 
-    console.log("Bước 5: Nhóm đơn hàng...");
-    const groupedOrders = await groupOrders();
-    console.log("Đã nhóm đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+    console.log(`Bước 5: Lấy đơn hàng gần nhất (trang ${page})...`);
+    const groupedOrders = await groupOrders(page);
+    console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
 
     console.log("Công cụ giao hàng hoàn tất.");
     return groupedOrders;
