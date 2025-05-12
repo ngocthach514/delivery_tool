@@ -16,7 +16,7 @@
         color: #333;
       }
       .container {
-        max-width: 1200px;
+        max-width: 85%;
         margin: 0 auto;
       }
       table {
@@ -29,7 +29,7 @@
       th,
       td {
         padding: 12px;
-        text-align: left;
+        text-align: center;
         border-bottom: 1px solid #ddd;
       }
       th {
@@ -41,6 +41,10 @@
       }
       .priority-high {
         background-color: #ffe6e6;
+        font-weight: bold;
+      }
+      .priority-warning {
+        background-color: #f38c8c;
         font-weight: bold;
       }
       .pagination {
@@ -90,8 +94,9 @@
         <thead>
           <tr>
             <th>Mã đơn hàng</th>
-            <th>Địa chỉ</th>
-            <th>Khoảng cách (km)</th>
+            <th>Địa chỉ giao hàng</th>
+            <th>Khoảng cách quy định (km)</th>
+            <th>Khoảng cách sau tính (km)</th>
             <th>Thời gian di chuyển (phút)</th>
             <th>Ưu tiên</th>
             <th>Thời gian tạo</th>
@@ -157,18 +162,36 @@
         tbody.innerHTML = "";
 
         orders.forEach((order) => {
+          const createdAt = new Date(order.created_at);
+          const now = new Date();
+          const diffMinutes = (now - createdAt) / (1000 * 60);
+
           const row = document.createElement("tr");
+
+          let priorityText = "Bình thường";
+
           if (order.status === 1) {
-            row.classList.add("priority-high");
+            if (diffMinutes > 30) {
+              row.classList.add("priority-warning");
+              priorityText = "Khẩn cấp";
+            } else {
+              row.classList.add("priority-high");
+              if (diffMinutes > 15) {
+                priorityText = "Cao";
+              }
+            }
           }
+
           row.innerHTML = `
-          <td>${order.id_order}</td>
-          <td>${order.address}</td>
-          <td>${order.distance.toFixed(2)}</td>
-          <td>${order.travel_time}</td>
-          <td>${order.status === 1 ? "Cao" : "Bình thường"}</td>
-          <td>${new Date(order.created_at).toLocaleString()}</td>
-        `;
+      <td>${order.id_order}</td>
+      <td>${order.address}</td>
+      <td>${order.SOKM !== null ? order.SOKM : "N/A"}</td>
+      <td>${order.distance.toFixed(2)}</td>
+      <td>${order.travel_time}</td>
+      <td>${priorityText}</td>
+      <td>${createdAt.toLocaleString()}</td>
+    `;
+
           tbody.appendChild(row);
         });
 

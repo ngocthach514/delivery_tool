@@ -8,8 +8,7 @@ const { OpenAI } = require("openai");
 const pLimitModule = require("p-limit");
 const cron = require("node-cron");
 
-const pLimit =
-  typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
+const pLimit = typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
 
 const app = express();
 const server = http.createServer(app);
@@ -19,6 +18,7 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static("public"));
 
+// Lưu trữ client để phát tín hiệu
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
   socket.on("disconnect", () => {
@@ -28,6 +28,7 @@ io.on("connection", (socket) => {
 
 let lastApiOrderCount = 0;
 
+// Cấu hình cơ sở dữ liệu và OpenAI
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -50,6 +51,28 @@ const DEFAULT_ADDRESS = {
 };
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
+
+// Kiểm tra biến môi trường
+if (!process.env.OPENAI_API_KEY) {
+  console.error("Lỗi: Thiếu OPENAI_API_KEY trong biến môi trường");
+  process.exit(1);
+}
+if (!process.env.TOMTOM_API_KEY) {
+  console.error("Lỗi: Thiếu TOMTOM_API_KEY trong biến môi trường");
+  process.exit(1);
+}
+if (!process.env.API_1_URL) {
+  console.error("Lỗi: Thiếu API_1_URL trong biến môi trường");
+  process.exit(1);
+}
+if (!process.env.API_2_BASE_URL) {
+  console.error("Lỗi: Thiếu API_2_BASE_URL trong biến môi trường");
+  process.exit(1);
+}
+if (!process.env.WAREHOUSE_ADDRESS) {
+  console.error("Lỗi: Thiếu WAREHOUSE_ADDRESS trong biến môi trường");
+  process.exit(1);
+}
 
 async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
   let attempt = 0;
@@ -138,8 +161,8 @@ async function checkRouteCache(originAddress, destinationAddress) {
       FROM route_cache
       WHERE origin_address = ? 
         AND destination_address = ?
-        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
-        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 2 HOUR)
+        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 4 HOUR)
+        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 4 HOUR)
       ORDER BY calculated_at DESC
       LIMIT 1
       `,
@@ -377,6 +400,7 @@ async function fetchAndSaveOrders() {
             MaPX: order.MaPX,
             DcGiaohang: res.data.DcGiaohang || "",
             Tinhtranggiao: res.data.Tinhtranggiao || "",
+            SOKM: order.SOKM || null, // Lấy SOKM từ API 1
             isEmpty: !res.data.DcGiaohang,
           }))
           .catch((err) => {
@@ -415,15 +439,17 @@ async function fetchAndSaveOrders() {
       order.MaPX,
       order.DcGiaohang,
       order.Tinhtranggiao,
+      order.SOKM,
       new Date(),
     ]);
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, created_at)
+      INSERT INTO orders (id_order, address, status, SOKM, created_at)
       VALUES ?
       ON DUPLICATE KEY UPDATE
       address = VALUES(address),
       status = VALUES(status),
+      SOKM = VALUES(SOKM),
       created_at = VALUES(created_at)
       `,
       [values]
@@ -983,7 +1009,8 @@ async function groupOrders(page = 1) {
         oa.distance,
         oa.travel_time,
         oa.status,
-        oa.created_at
+        oa.created_at,
+        o.SOKM
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
@@ -1021,6 +1048,7 @@ async function groupOrders(page = 1) {
       travel_time: row.travel_time,
       status: row.status,
       created_at: row.created_at,
+      SOKM: row.SOKM,
     }));
 
     await connection.end();
@@ -1054,7 +1082,7 @@ async function syncOrderStatus() {
       SELECT id_order
       FROM orders
       WHERE status = 'Chờ xác nhận giao/lấy hàng'
-        AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
       `
     );
     console.log("Số lượng đơn hàng cần đồng bộ trạng thái:", orders.length);
