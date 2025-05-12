@@ -1,206 +1,211 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Danh sách đơn hàng</title>
-  <script src="/socket.io/socket.io.js"></script>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 20px;
-      background-color: #f4f4f4;
-    }
-    h1 {
-      text-align: center;
-      color: #333;
-    }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background-color: #fff;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-      margin-bottom: 20px;
-    }
-    th, td {
-      padding: 12px;
-      text-align: left;
-      border-bottom: 1px solid #ddd;
-    }
-    th {
-      background-color: #4CAF50;
-      color: white;
-    }
-    tr:hover {
-      background-color: #f5f5f5;
-    }
-    .priority-high {
-      background-color: #ffe6e6;
-      font-weight: bold;
-    }
-    .pagination {
-      text-align: center;
-    }
-    .pagination button {
-      padding: 8px 12px;
-      margin: 0 5px;
-      border: none;
-      background-color: #4CAF50;
-      color: white;
-      cursor: pointer;
-      border-radius: 4px;
-    }
-    .pagination button:disabled {
-      background-color: #ccc;
-      cursor: not-allowed;
-    }
-    .pagination button:hover:not(:disabled) {
-      background-color: #45a049;
-    }
-    .error {
-      color: red;
-      text-align: center;
-      margin-top: 20px;
-    }
-    .loading {
-      text-align: center;
-      margin-top: 20px;
-      font-style: italic;
-    }
-    .notification {
-      color: green;
-      text-align: center;
-      margin-top: 10px;
-      display: none;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Danh sách đơn hàng</h1>
-    <div id="notification" class="notification"></div>
-    <div id="loading" class="loading">Đang tải dữ liệu...</div>
-    <div id="error" class="error" style="display: none;"></div>
-    <table id="orders-table" style="display: none;">
-      <thead>
-        <tr>
-          <th>Mã đơn hàng</th>
-          <th>Địa chỉ</th>
-          <th>Khoảng cách (km)</th>
-          <th>Thời gian di chuyển (phút)</th>
-          <th>Ưu tiên</th>
-          <th>Thời gian tạo</th>
-        </tr>
-      </thead>
-      <tbody id="orders-body"></tbody>
-    </table>
-    <div class="pagination" id="pagination"></div>
-  </div>
-
-  <script>
-    const apiUrl = '/grouped-orders';
-    let currentPage = 1;
-    let totalPages = 1;
-
-    // Kết nối Socket.io
-    const socket = io();
-
-    socket.on('connect', () => {
-      console.log('Connected to Socket.io server');
-    });
-
-    socket.on('statusUpdated', (data) => {
-      console.log('Received statusUpdated:', data);
-      document.getElementById('notification').textContent = `${data.message} (${data.updatedCount} đơn hàng)`;
-      document.getElementById('notification').style.display = 'block';
-      setTimeout(() => {
-        document.getElementById('notification').style.display = 'none';
-      }, 3000);
-      fetchOrders(currentPage); // Làm mới danh sách đơn hàng
-    });
-
-    async function fetchOrders(page) {
-      try {
-        document.getElementById('loading').style.display = 'block';
-        document.getElementById('error').style.display = 'none';
-        document.getElementById('orders-table').style.display = 'none';
-
-        const response = await fetch(`${apiUrl}?page=${page}`);
-        if (!response.ok) {
-          throw new Error('Lỗi khi lấy dữ liệu từ API');
-        }
-        const data = await response.json();
-
-        totalPages = data.totalPages;
-        currentPage = data.currentPage;
-        renderOrders(data.orders);
-        renderPagination();
-      } catch (error) {
-        document.getElementById('error').textContent = `Lỗi: ${error.message}`;
-        document.getElementById('error').style.display = 'block';
-      } finally {
-        document.getElementById('loading').style.display = 'none';
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Danh sách đơn hàng</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        background-color: #f4f4f4;
       }
-    }
+      h1 {
+        text-align: center;
+        color: #333;
+      }
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background-color: #fff;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+      }
+      th,
+      td {
+        padding: 12px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+      th {
+        background-color: #4caf50;
+        color: white;
+      }
+      tr:hover {
+        background-color: #f5f5f5;
+      }
+      .priority-high {
+        background-color: #ffe6e6;
+        font-weight: bold;
+      }
+      .pagination {
+        text-align: center;
+      }
+      .pagination button {
+        padding: 8px 12px;
+        margin: 0 5px;
+        border: none;
+        background-color: #4caf50;
+        color: white;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .pagination button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .pagination button:hover:not(:disabled) {
+        background-color: #45a049;
+      }
+      .error {
+        color: red;
+        text-align: center;
+        margin-top: 20px;
+      }
+      .loading {
+        text-align: center;
+        margin-top: 20px;
+        font-style: italic;
+      }
+      .notification {
+        color: green;
+        text-align: center;
+        margin-top: 10px;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Danh sách đơn hàng</h1>
+      <div id="notification" class="notification"></div>
+      <div id="loading" class="loading">Đang tải dữ liệu...</div>
+      <div id="error" class="error" style="display: none"></div>
+      <table id="orders-table" style="display: none">
+        <thead>
+          <tr>
+            <th>Mã đơn hàng</th>
+            <th>Địa chỉ</th>
+            <th>Khoảng cách (km)</th>
+            <th>Thời gian di chuyển (phút)</th>
+            <th>Ưu tiên</th>
+            <th>Thời gian tạo</th>
+          </tr>
+        </thead>
+        <tbody id="orders-body"></tbody>
+      </table>
+      <div class="pagination" id="pagination"></div>
+    </div>
 
-    function renderOrders(orders) {
-      const tbody = document.getElementById('orders-body');
-      tbody.innerHTML = '';
+    <script>
+      const apiUrl = "/grouped-orders";
+      let currentPage = 1;
+      let totalPages = 1;
 
-      orders.forEach(order => {
-        const row = document.createElement('tr');
-        if (order.status === 1) {
-          row.classList.add('priority-high');
+      // Kết nối Socket.io
+      const socket = io();
+
+      socket.on("connect", () => {
+        console.log("Connected to Socket.io server");
+      });
+
+      socket.on("statusUpdated", (data) => {
+        console.log("Received statusUpdated:", data);
+        document.getElementById(
+          "notification"
+        ).textContent = `${data.message} (${data.updatedCount} đơn hàng)`;
+        document.getElementById("notification").style.display = "block";
+        setTimeout(() => {
+          document.getElementById("notification").style.display = "none";
+        }, 3000);
+        fetchOrders(currentPage); // Làm mới danh sách đơn hàng
+      });
+
+      async function fetchOrders(page) {
+        try {
+          document.getElementById("loading").style.display = "block";
+          document.getElementById("error").style.display = "none";
+          document.getElementById("orders-table").style.display = "none";
+
+          const response = await fetch(`${apiUrl}?page=${page}`);
+          if (!response.ok) {
+            throw new Error("Lỗi khi lấy dữ liệu từ API");
+          }
+          const data = await response.json();
+
+          totalPages = data.totalPages;
+          currentPage = data.currentPage;
+          renderOrders(data.orders);
+          renderPagination();
+        } catch (error) {
+          document.getElementById(
+            "error"
+          ).textContent = `Lỗi: ${error.message}`;
+          document.getElementById("error").style.display = "block";
+        } finally {
+          document.getElementById("loading").style.display = "none";
         }
-        row.innerHTML = `
+      }
+
+      function renderOrders(orders) {
+        const tbody = document.getElementById("orders-body");
+        tbody.innerHTML = "";
+
+        orders.forEach((order) => {
+          const row = document.createElement("tr");
+          if (order.status === 1) {
+            row.classList.add("priority-high");
+          }
+          row.innerHTML = `
           <td>${order.id_order}</td>
           <td>${order.address}</td>
           <td>${order.distance.toFixed(2)}</td>
           <td>${order.travel_time}</td>
-          <td>${order.status === 1 ? 'Cao' : 'Bình thường'}</td>
+          <td>${order.status === 1 ? "Cao" : "Bình thường"}</td>
           <td>${new Date(order.created_at).toLocaleString()}</td>
         `;
-        tbody.appendChild(row);
-      });
+          tbody.appendChild(row);
+        });
 
-      document.getElementById('orders-table').style.display = 'table';
-    }
+        document.getElementById("orders-table").style.display = "table";
+      }
 
-    function renderPagination() {
-      const pagination = document.getElementById('pagination');
-      pagination.innerHTML = '';
+      function renderPagination() {
+        const pagination = document.getElementById("pagination");
+        pagination.innerHTML = "";
 
-      const prevButton = document.createElement('button');
-      prevButton.textContent = 'Trang trước';
-      prevButton.disabled = currentPage === 1;
-      prevButton.addEventListener('click', () => {
-        if (currentPage > 1) {
-          fetchOrders(currentPage - 1);
-        }
-      });
-      pagination.appendChild(prevButton);
+        const prevButton = document.createElement("button");
+        prevButton.textContent = "Trang trước";
+        prevButton.disabled = currentPage === 1;
+        prevButton.addEventListener("click", () => {
+          if (currentPage > 1) {
+            fetchOrders(currentPage - 1);
+          }
+        });
+        pagination.appendChild(prevButton);
 
-      const nextButton = document.createElement('button');
-      nextButton.textContent = 'Trang sau';
-      nextButton.disabled = currentPage === totalPages;
-      nextButton.addEventListener('click', () => {
-        if (currentPage < totalPages) {
-          fetchOrders(currentPage + 1);
-        }
-      });
-      pagination.appendChild(nextButton);
+        const nextButton = document.createElement("button");
+        nextButton.textContent = "Trang sau";
+        nextButton.disabled = currentPage === totalPages;
+        nextButton.addEventListener("click", () => {
+          if (currentPage < totalPages) {
+            fetchOrders(currentPage + 1);
+          }
+        });
+        pagination.appendChild(nextButton);
 
-      const pageInfo = document.createElement('span');
-      pageInfo.textContent = ` Trang ${currentPage} / ${totalPages} `;
-      pagination.appendChild(pageInfo);
-    }
+        const pageInfo = document.createElement("span");
+        pageInfo.textContent = ` Trang ${currentPage} / ${totalPages} `;
+        pagination.appendChild(pageInfo);
+      }
 
-    // Tải dữ liệu trang đầu tiên khi khởi động
-    fetchOrders(currentPage);
-  </script>
-</body>
+      // Tải dữ liệu trang đầu tiên khi khởi động
+      fetchOrders(currentPage);
+    </script>
+  </body>
 </html>

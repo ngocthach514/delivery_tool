@@ -3,8 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "server": "node src/server.js",
+    "start": "node src/delivery-tool.js",
     "sync-sheet": "node src/sync_google_sheet.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

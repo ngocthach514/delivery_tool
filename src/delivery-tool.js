@@ -1,5 +1,7 @@
-let lastApiOrderCount = 0;
 require("dotenv").config();
+const express = require("express");
+const http = require("http");
+const socketIo = require("socket.io");
 const axios = require("axios");
 const mysql = require("mysql2/promise");
 const { OpenAI } = require("openai");
@@ -8,6 +10,46 @@ const cron = require("node-cron");
 
 const pLimit =
   typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
+
+const app = express();
+const server = http.createServer(app);
+const io = socketIo(server);
+const port = process.env.PORT || 3000;
+
+app.use(express.json());
+app.use(express.static("public"));
+
+io.on("connection", (socket) => {
+  console.log("Client connected:", socket.id);
+  socket.on("disconnect", () => {
+    console.log("Client disconnected:", socket.id);
+  });
+});
+
+let lastApiOrderCount = 0;
+
+const dbConfig = {
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_DATABASE,
+};
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const API_1 = process.env.API_1_URL;
+const API_2_BASE = process.env.API_2_BASE_URL;
+const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
+const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
+const DEFAULT_ADDRESS = {
+  DcGiaohang: process.env.DEFAULT_ADDRESS,
+  District: "Quận Tân Bình",
+  Ward: "Phường 4",
+  Source: "Default",
+  Distance: 0,
+  TravelTime: 0,
+};
+
+const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
 
 async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
   let attempt = 0;
@@ -25,33 +67,6 @@ async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
     }
   }
 }
-
-const dbConfig = {
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_DATABASE,
-};
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const API_1 = process.env.API_1_URL;
-const API_2_BASE = process.env.API_2_BASE_URL;
-const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
-const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
-const DEFAULT_ADDRESS = {
-  DcGiaohang:
-    process.env.DEFAULT_ADDRESS,
-  District: "Quận Tân Bình",
-  Ward: "Phường 4",
-  Source: "Default",
-  Distance: 0,
-  TravelTime: 0,
-};
-
-const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
 
 function isTransportAddress(address) {
   if (!address) return false;
@@ -104,10 +119,7 @@ async function getValidOrderIds() {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute("SELECT id_order FROM orders");
     await connection.end();
-    console.log(
-      "Valid order IDs:",
-      rows.map((row) => row.id_order)
-    );
+    console.log("Valid order IDs:", rows.map((row) => row.id_order));
     console.log(`getValidOrderIds thực thi trong ${Date.now() - startTime}ms`);
     return new Set(rows.map((row) => row.id_order));
   } catch (error) {
@@ -978,7 +990,24 @@ async function groupOrders(page = 1) {
         AND oa.distance IS NOT NULL 
         AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-      ORDER BY oa.status DESC, oa.created_at DESC, oa.distance ASC, oa.travel_time ASC
+      ORDER BY 
+        oa.status DESC,
+        CASE 
+          WHEN oa.status = 1 THEN oa.created_at
+          ELSE NULL
+        END ASC,
+        CASE 
+          WHEN oa.status = 1 THEN oa.distance
+          ELSE NULL
+        END ASC,
+        CASE 
+          WHEN oa.status = 0 THEN oa.distance
+          ELSE NULL
+        END ASC,
+        CASE 
+          WHEN oa.status = 0 THEN oa.travel_time
+          ELSE NULL
+        END ASC
       LIMIT ${parseInt(pageSize)} OFFSET ${parseInt(offset)}
     `;
 
@@ -1137,12 +1166,20 @@ async function main(page = 1, io) {
   }
 }
 
-// Lập lịch chạy tự động
+// Chạy main ngay khi khởi động server
+main(1, io).catch((error) =>
+  console.error("Lỗi khi chạy main lần đầu:", error.message)
+);
+
+// Lập lịch chạy tự động mỗi 5 phút
 cron.schedule("*/5 * * * *", () => {
   console.log("Chạy quy trình giao hàng lúc:", new Date().toISOString());
-  main(1).catch((error) => console.error("Lỗi khi chạy main:", error.message));
+  main(1, io).catch((error) =>
+    console.error("Lỗi khi chạy main:", error.message)
+  );
 });
 
+// Lập lịch đồng bộ trạng thái mỗi 15 phút
 cron.schedule("*/15 * * * *", () => {
   console.log("Chạy đồng bộ trạng thái lúc:", new Date().toISOString());
   syncOrderStatus().catch((error) =>
@@ -1150,12 +1187,41 @@ cron.schedule("*/15 * * * *", () => {
   );
 });
 
-module.exports = {
-  main,
-  groupOrders,
-  standardizeAddresses,
-  updateStandardizedAddresses,
-  calculateDistances,
-  syncOrderStatus,
-  updatePriorityStatus,
-};
+// --------------------------------------------- ROUTE ---------------------------------------------
+app.get("/grouped-orders", async (req, res) => {
+  try {
+    console.time("grouped-orders");
+    const page = parseInt(req.query.page) || 1;
+    if (isNaN(page) || page < 1) {
+      return res.status(400).json({ error: "Page phải là số nguyên dương" });
+    }
+    console.log(`Gọi groupOrders với page: ${page}`);
+    const groupedOrders = await groupOrders(page);
+    console.timeEnd("grouped-orders");
+    res.status(200).json(groupedOrders);
+  } catch (error) {
+    console.error("Lỗi trong /grouped-orders:", error.message, error.stack);
+    res.status(500).json({ error: "Lỗi server", details: error.message });
+  }
+});
+
+app.get("/process-orders", async (req, res) => {
+  try {
+    console.time("process-orders");
+    const page = parseInt(req.query.page) || 1;
+    if (isNaN(page) || page < 1) {
+      return res.status(400).json({ error: "Page phải là số nguyên dương" });
+    }
+    console.log(`Gọi main với page: ${page}`);
+    const groupedOrders = await main(page, io);
+    console.timeEnd("process-orders");
+    res.status(200).json(groupedOrders);
+  } catch (error) {
+    console.error("Lỗi trong /process-orders:", error.message, error.stack);
+    res.status(500).json({ error: "Lỗi server", details: error.message });
+  }
+});
+
+server.listen(port, () => {
+  console.log(`Server running at http://localhost:${port}`);
+});
