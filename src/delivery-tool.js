@@ -1,22 +1,14 @@
+let lastApiOrderCount = 0;
 require("dotenv").config();
-console.log(
-  "OPENAI_API_KEY (delivery-tool.js):",
-  process.env.OPENAI_API_KEY ? "Đã thiết lập" : "Chưa thiết lập"
-);
-console.log(
-  "TOMTOM_API_KEY (delivery-tool.js):",
-  process.env.TOMTOM_API_KEY ? "Đã thiết lập" : "Chưa thiết lập"
-);
-
 const axios = require("axios");
 const mysql = require("mysql2/promise");
 const { OpenAI } = require("openai");
 const pLimitModule = require("p-limit");
+const cron = require("node-cron");
 
 const pLimit =
   typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
 
-// Cơ chế retry thủ công
 async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
   let attempt = 0;
   while (attempt < retries) {
@@ -35,40 +27,15 @@ async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
 }
 
 const dbConfig = {
-  host: process.env.DB_HOST || "localhost",
-  user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "",
-  database: process.env.DB_DATABASE || "delivery_data",
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_DATABASE,
 };
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-
-if (!process.env.OPENAI_API_KEY) {
-  console.error("Lỗi: Thiếu OPENAI_API_KEY trong biến môi trường");
-  process.exit(1);
-}
-
-if (!process.env.TOMTOM_API_KEY) {
-  console.error("Lỗi: Thiếu TOMTOM_API_KEY trong biến môi trường");
-  process.exit(1);
-}
-
-if (!process.env.API_1_URL) {
-  console.error("Lỗi: Thiếu API_1_URL trong biến môi trường");
-  process.exit(1);
-}
-
-if (!process.env.API_2_BASE_URL) {
-  console.error("Lỗi: Thiếu API_2_BASE_URL trong biến môi trường");
-  process.exit(1);
-}
-
-if (!process.env.WAREHOUSE_ADDRESS) {
-  console.error("Lỗi: Thiếu WAREHOUSE_ADDRESS trong biến môi trường");
-  process.exit(1);
-}
 
 const API_1 = process.env.API_1_URL;
 const API_2_BASE = process.env.API_2_BASE_URL;
@@ -76,8 +43,7 @@ const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
 const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
 const DEFAULT_ADDRESS = {
   DcGiaohang:
-    process.env.DEFAULT_ADDRESS ||
-    "108/E8 Đường Cộng Hòa, Phường 4, Quận Tân Bình, Hồ Chí Minh, Việt Nam",
+    process.env.DEFAULT_ADDRESS,
   District: "Quận Tân Bình",
   Ward: "Phường 4",
   Source: "Default",
@@ -133,6 +99,7 @@ function isInHoChiMinhCity(address) {
 }
 
 async function getValidOrderIds() {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute("SELECT id_order FROM orders");
@@ -141,6 +108,7 @@ async function getValidOrderIds() {
       "Valid order IDs:",
       rows.map((row) => row.id_order)
     );
+    console.log(`getValidOrderIds thực thi trong ${Date.now() - startTime}ms`);
     return new Set(rows.map((row) => row.id_order));
   } catch (error) {
     console.error("Lỗi khi lấy danh sách id_order:", error.message);
@@ -149,13 +117,19 @@ async function getValidOrderIds() {
 }
 
 async function checkRouteCache(originAddress, destinationAddress) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute(
       `
-      SELECT distance, travel_time
+      SELECT distance, travel_time, calculated_at
       FROM route_cache
-      WHERE origin_address = ? AND destination_address = ?
+      WHERE origin_address = ? 
+        AND destination_address = ?
+        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
+        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 2 HOUR)
+      ORDER BY calculated_at DESC
+      LIMIT 1
       `,
       [originAddress, destinationAddress]
     );
@@ -163,10 +137,14 @@ async function checkRouteCache(originAddress, destinationAddress) {
 
     if (rows.length > 0) {
       console.log(
-        `Lấy tuyến đường từ cache cho ${originAddress} đến ${destinationAddress}`
+        `Lấy tuyến đường từ cache cho ${originAddress} đến ${destinationAddress} (calculated_at: ${rows[0].calculated_at})`
       );
+      console.log(`checkRouteCache thực thi trong ${Date.now() - startTime}ms`);
       return { distance: rows[0].distance, travelTime: rows[0].travel_time };
     }
+    console.log(
+      `Không tìm thấy cache hợp lệ cho ${originAddress} đến ${destinationAddress} trong khoảng ±2 tiếng`
+    );
     return null;
   } catch (error) {
     console.error("Lỗi khi kiểm tra route_cache:", error.message);
@@ -180,6 +158,7 @@ async function saveRouteToCache(
   distance,
   travelTime
 ) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
     await connection.execute(
@@ -197,12 +176,14 @@ async function saveRouteToCache(
     console.log(
       `Lưu tuyến đường vào cache: ${originAddress} đến ${destinationAddress}`
     );
+    console.log(`saveRouteToCache thực thi trong ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error("Lỗi khi lưu route_cache:", error.message);
   }
 }
 
 async function geocodeAddress(address) {
+  const startTime = Date.now();
   const run = async () => {
     const response = await axios.get(
       `${process.env.TOMTOM_GEOCODE_API_URL}/${encodeURIComponent(
@@ -226,7 +207,9 @@ async function geocodeAddress(address) {
   };
 
   try {
-    return await retry(run);
+    const result = await retry(run);
+    console.log(`geocodeAddress thực thi trong ${Date.now() - startTime}ms`);
+    return result;
   } catch (error) {
     console.error(
       `Lỗi khi gọi TomTom Geocoding API cho ${address}:`,
@@ -237,11 +220,12 @@ async function geocodeAddress(address) {
 }
 
 async function calculateRoute(originAddress, destinationAddress) {
+  const startTime = Date.now();
   if (!isInHoChiMinhCity(destinationAddress)) {
     console.log(
       `Bỏ qua tuyến đường cho ${destinationAddress}: Ngoài TP. Hồ Chí Minh`
     );
-    return { distance: 0, travelTime: 0 };
+    return { distance: null, travelTime: null };
   }
 
   const cacheResult = await checkRouteCache(originAddress, destinationAddress);
@@ -257,7 +241,7 @@ async function calculateRoute(originAddress, destinationAddress) {
       console.log(
         `Không thể tính tuyến đường từ ${originAddress} đến ${destinationAddress}: Thiếu tọa độ`
       );
-      return { distance: 0, travelTime: 0 };
+      return { distance: null, travelTime: null };
     }
 
     const response = await axios.get(
@@ -274,7 +258,7 @@ async function calculateRoute(originAddress, destinationAddress) {
     if (response.data.routes && response.data.routes.length > 0) {
       const route = response.data.routes[0];
       const distance = route.summary.lengthInMeters / 1000;
-      const travelTime = Math.ceil(route.summary.travelTimeInSeconds / 60); // Chuyển sang phút, làm tròn lên
+      const travelTime = Math.ceil(route.summary.travelTimeInSeconds / 60);
       console.log(
         `Tuyến đường từ ${originAddress} đến ${destinationAddress}: ${distance} km, ${travelTime} phút`
       );
@@ -284,12 +268,12 @@ async function calculateRoute(originAddress, destinationAddress) {
     console.log(
       `Không tìm thấy tuyến đường từ ${originAddress} đến ${destinationAddress}`
     );
-    return { distance: 0, travelTime: 0 };
+    return { distance: null, travelTime: null };
   };
 
   try {
     const result = await retry(run);
-    if (result.distance !== 0 || result.travelTime !== 0) {
+    if (result.distance !== null || result.travelTime !== null) {
       await saveRouteToCache(
         originAddress,
         destinationAddress,
@@ -297,17 +281,19 @@ async function calculateRoute(originAddress, destinationAddress) {
         result.travelTime
       );
     }
+    console.log(`calculateRoute thực thi trong ${Date.now() - startTime}ms`);
     return result;
   } catch (error) {
     console.error(
       `Lỗi khi gọi TomTom Routing API từ ${originAddress} đến ${destinationAddress}:`,
       error.message
     );
-    return { distance: 0, travelTime: 0 };
+    return { distance: null, travelTime: null };
   }
 }
 
 async function findTransportCompany(address) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
     const cleanedAddress = preprocessAddress(address);
@@ -335,6 +321,9 @@ async function findTransportCompany(address) {
 
     if (rows.length > 0) {
       console.log("Tìm thấy nhà xe:", rows[0]);
+      console.log(
+        `findTransportCompany thực thi trong ${Date.now() - startTime}ms`
+      );
       return {
         DcGiaohang: rows[0].standardized_address,
         District: rows[0].district,
@@ -351,19 +340,31 @@ async function findTransportCompany(address) {
 }
 
 async function fetchAndSaveOrders() {
+  const startTime = Date.now();
   try {
+    let api2RequestCount = 0;
     const response1 = await axios.get(API_1);
     const orders = response1.data;
     console.log("Số lượng đơn hàng từ API 1:", orders.length);
 
+    if (orders.length === lastApiOrderCount && orders.length > 0) {
+      console.log("Số lượng đơn hàng không thay đổi, bỏ qua gọi API_2.");
+      console.log("Tổng số yêu cầu API_2:", api2RequestCount);
+      return [];
+    }
+
+    lastApiOrderCount = orders.length;
+
     const limit = pLimit(10);
     const api2Promises = orders.map((order) =>
-      limit(() =>
-        axios
+      limit(() => {
+        api2RequestCount++;
+        return axios
           .get(`${API_2_BASE}?qc=${order.MaPX}`)
           .then((res) => ({
             MaPX: order.MaPX,
             DcGiaohang: res.data.DcGiaohang || "",
+            Tinhtranggiao: res.data.Tinhtranggiao || "",
             isEmpty: !res.data.DcGiaohang,
           }))
           .catch((err) => {
@@ -372,8 +373,8 @@ async function fetchAndSaveOrders() {
               err.message
             );
             return null;
-          })
-      )
+          });
+      })
     );
 
     const settledResults = await Promise.allSettled(api2Promises);
@@ -382,34 +383,65 @@ async function fetchAndSaveOrders() {
         (result) => result.status === "fulfilled" && result.value !== null
       )
       .map((result) => result.value);
-    console.log("Số lượng kết quả thành công từ API 2:", results.length);
 
-    const connection = await mysql.createConnection(dbConfig);
-    if (results.length > 0) {
-      const values = results.map((order) => [order.MaPX, order.DcGiaohang]);
-      const [insertResult] = await connection.query(
-        "INSERT INTO orders (id_order, address) VALUES ? ON DUPLICATE KEY UPDATE address = VALUES(address)",
-        [values]
-      );
+    console.log("Tổng số yêu cầu API_2:", api2RequestCount);
+
+    const pendingOrders = results.filter(
+      (order) => order.Tinhtranggiao === "Chờ xác nhận giao/lấy hàng"
+    );
+    console.log("Số lượng đơn hàng chưa giao:", pendingOrders.length);
+
+    if (pendingOrders.length === 0) {
       console.log(
-        "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (orders):",
-        insertResult.affectedRows
+        `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
       );
-
-      const [savedOrders] = await connection.query(
-        "SELECT id_order FROM orders WHERE id_order IN (?)",
-        [results.map((order) => order.MaPX)]
-      );
-      const savedMaPX = new Set(savedOrders.map((order) => order.id_order));
-
-      const validResults = results.filter((order) => savedMaPX.has(order.MaPX));
-      console.log("Số lượng đơn hàng hợp lệ sau khi lưu:", validResults.length);
-      await connection.end();
-      return validResults;
+      return [];
     }
 
+    const connection = await mysql.createConnection(dbConfig);
+    const values = pendingOrders.map((order) => [
+      order.MaPX,
+      order.DcGiaohang,
+      order.Tinhtranggiao,
+      new Date(),
+    ]);
+    const [insertResult] = await connection.query(
+      `
+      INSERT INTO orders (id_order, address, status, created_at)
+      VALUES ?
+      ON DUPLICATE KEY UPDATE
+      address = VALUES(address),
+      status = VALUES(status),
+      created_at = VALUES(created_at)
+      `,
+      [values]
+    );
+    console.log(
+      "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (orders):",
+      insertResult.affectedRows
+    );
+
+    const [savedOrders] = await connection.query(
+      `
+      SELECT id_order
+      FROM orders
+      WHERE id_order IN (?)
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        AND status = 'Chờ xác nhận giao/lấy hàng'
+      `,
+      [pendingOrders.map((order) => order.MaPX)]
+    );
+    const savedMaPX = new Set(savedOrders.map((order) => order.id_order));
+
+    const validResults = pendingOrders.filter((order) =>
+      savedMaPX.has(order.MaPX)
+    );
+    console.log("Số lượng đơn hàng mới và hợp lệ:", validResults.length);
     await connection.end();
-    return [];
+    console.log(
+      `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
+    );
+    return validResults;
   } catch (error) {
     console.error("Lỗi trong fetchAndSaveOrders:", error.message);
     throw error;
@@ -417,6 +449,7 @@ async function fetchAndSaveOrders() {
 }
 
 async function standardizeAddresses(orders) {
+  const startTime = Date.now();
   try {
     const standardizedOrders = [];
     let transportResults = [];
@@ -572,7 +605,6 @@ async function standardizeAddresses(orders) {
 
     const openAIPromisesResults = await Promise.all(openAIPromises);
 
-    // Lưu kết quả OpenAI vào orders_address
     const validOrderIds = await getValidOrderIds();
     const validOpenAIResults = openAIPromisesResults.filter((order) =>
       validOrderIds.has(order.MaPX)
@@ -603,7 +635,6 @@ async function standardizeAddresses(orders) {
         result.affectedRows
       );
 
-      // Truy vấn orders_address để tìm các bản ghi có district và ward là null
       const [nullDistrictWardOrders] = await connection.query(
         `
         SELECT id_order, address, source
@@ -616,7 +647,6 @@ async function standardizeAddresses(orders) {
         nullDistrictWardOrders
       );
 
-      // Ánh xạ với transport_companies
       const transportPromises = nullDistrictWardOrders.map((order) =>
         limit(async () => {
           const { id_order, address, source } = order;
@@ -650,7 +680,6 @@ async function standardizeAddresses(orders) {
         (result) => result !== null
       );
 
-      // Lưu kết quả ánh xạ vào orders_address và gộp vào standardizedOrders
       if (transportResults.length > 0) {
         const transportValues = transportResults.map((order) => [
           order.MaPX,
@@ -678,7 +707,6 @@ async function standardizeAddresses(orders) {
           transportInsertResult.affectedRows
         );
 
-        // Gộp transportResults vào standardizedOrders
         for (const result of transportResults) {
           const index = standardizedOrders.findIndex(
             (order) => order.MaPX === result.MaPX
@@ -696,7 +724,9 @@ async function standardizeAddresses(orders) {
       await connection.end();
     }
 
-    // Trả về tất cả kết quả OpenAI và ánh xạ
+    console.log(
+      `standardizeAddresses thực thi trong ${Date.now() - startTime}ms`
+    );
     return validOpenAIResults.concat(transportResults);
   } catch (error) {
     console.error("Lỗi trong standardizeAddresses:", error.message);
@@ -704,19 +734,83 @@ async function standardizeAddresses(orders) {
   }
 }
 
-async function calculateDistances() {
+async function updatePriorityStatus(io) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
-    const [orders] = await connection.query(
+    const [result] = await connection.execute(
       `
-      SELECT id_order, address
-      FROM orders_address
-      WHERE address IS NOT NULL
+      UPDATE orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      SET oa.status = 1
+      WHERE oa.status = 0
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND oa.created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
       `
     );
-    console.log("Các đơn hàng để tính khoảng cách:", orders.length);
+    await connection.end();
+    console.log(
+      `Đã cập nhật ${result.affectedRows} đơn hàng thành ưu tiên cao (status = 1)`
+    );
+    console.log(
+      `updatePriorityStatus thực thi trong ${Date.now() - startTime}ms`
+    );
 
-    // Nhóm địa chỉ trùng lặp
+    // Phát tín hiệu qua Socket.io nếu có bản ghi được cập nhật
+    if (result.affectedRows > 0 && io) {
+      io.emit("statusUpdated", {
+        message: "Đã cập nhật trạng thái đơn hàng",
+        updatedCount: result.affectedRows,
+      });
+      console.log(
+        `Đã gửi tín hiệu statusUpdated qua Socket.io: ${result.affectedRows} đơn hàng`
+      );
+    }
+  } catch (error) {
+    console.error("Lỗi trong updatePriorityStatus:", error.message);
+  }
+}
+
+async function calculateDistances() {
+  const startTime = Date.now();
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const [orderCount] = await connection.query(
+      `
+      SELECT COUNT(*) as count
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL
+        AND oa.distance IS NULL
+        AND oa.travel_time IS NULL
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND o.created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      `
+    );
+
+    if (orderCount[0].count === 0) {
+      console.log("Không có đơn hàng mới để tính khoảng cách, bỏ qua.");
+      await connection.end();
+      console.log(
+        `calculateDistances thực thi trong ${Date.now() - startTime}ms`
+      );
+      return;
+    }
+
+    const [orders] = await connection.query(
+      `
+      SELECT oa.id_order, oa.address
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL
+        AND oa.distance IS NULL
+        AND oa.travel_time IS NULL
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND o.created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      `
+    );
+    console.log("Các đơn hàng mới để tính khoảng cách:", orders.length);
+
     const addressMap = {};
     orders.forEach((order) => {
       if (!addressMap[order.address]) {
@@ -728,7 +822,7 @@ async function calculateDistances() {
     const uniqueAddresses = Object.keys(addressMap);
     console.log("Số địa chỉ duy nhất:", uniqueAddresses.length);
 
-    const limit = pLimit(2); // Giảm xuống 2 để tránh lỗi 429
+    const limit = pLimit(2);
     const routePromises = uniqueAddresses.map((address) =>
       limit(async () => {
         console.log(`Tính tuyến đường cho địa chỉ: ${address}`);
@@ -755,7 +849,8 @@ async function calculateDistances() {
       );
       const [updateResult] = await connection.query(
         `
-        INSERT INTO orders_address (id_order, distance, travel_time) VALUES ? 
+        INSERT INTO orders_address (id_order, distance, travel_time)
+        VALUES ? 
         ON DUPLICATE KEY UPDATE 
         distance = VALUES(distance), 
         travel_time = VALUES(travel_time)
@@ -769,6 +864,9 @@ async function calculateDistances() {
     }
 
     await connection.end();
+    console.log(
+      `calculateDistances thực thi trong ${Date.now() - startTime}ms`
+    );
   } catch (error) {
     console.error("Lỗi trong calculateDistances:", error.message);
     throw error;
@@ -776,6 +874,7 @@ async function calculateDistances() {
 }
 
 async function updateStandardizedAddresses(data) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
 
@@ -826,6 +925,9 @@ async function updateStandardizedAddresses(data) {
     }
 
     await connection.end();
+    console.log(
+      `updateStandardizedAddresses thực thi trong ${Date.now() - startTime}ms`
+    );
   } catch (error) {
     console.error("Lỗi trong updateStandardizedAddresses:", error.message);
     throw error;
@@ -833,47 +935,50 @@ async function updateStandardizedAddresses(data) {
 }
 
 async function groupOrders(page = 1) {
+  const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
     const pageSize = 10;
     const offset = (page - 1) * pageSize;
 
-    // Kiểm tra page hợp lệ
     if (!Number.isInteger(page) || page < 1) {
       throw new Error("Page phải là số nguyên dương");
     }
 
-    // Đếm tổng số đơn hàng hợp lệ
     const [totalResult] = await connection.execute(
       `
       SELECT COUNT(*) as total
-      FROM orders_address
-      WHERE address IS NOT NULL 
-        AND distance IS NOT NULL 
-        AND distance > 0
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND oa.distance IS NOT NULL 
+        AND oa.distance > 0
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
       `
     );
     const totalOrders = totalResult[0].total;
     const totalPages = Math.ceil(totalOrders / pageSize);
 
-    // Log debug
     console.log(
       `groupOrders: page=${page}, pageSize=${pageSize}, offset=${offset}`
     );
 
-    // Truy vấn không dùng placeholder
     const query = `
       SELECT 
-        id_order,
-        address,
-        source,
-        distance,
-        travel_time
-      FROM orders_address
-      WHERE address IS NOT NULL 
-        AND distance IS NOT NULL 
-        AND distance > 0
-      ORDER BY distance ASC, travel_time ASC
+        oa.id_order,
+        oa.address,
+        oa.source,
+        oa.distance,
+        oa.travel_time,
+        oa.status,
+        oa.created_at
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND oa.distance IS NOT NULL 
+        AND oa.distance > 0
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+      ORDER BY oa.status DESC, oa.created_at DESC, oa.distance ASC, oa.travel_time ASC
       LIMIT ${parseInt(pageSize)} OFFSET ${parseInt(offset)}
     `;
 
@@ -885,6 +990,8 @@ async function groupOrders(page = 1) {
       source: row.source,
       distance: row.distance,
       travel_time: row.travel_time,
+      status: row.status,
+      created_at: row.created_at,
     }));
 
     await connection.end();
@@ -893,6 +1000,7 @@ async function groupOrders(page = 1) {
       totalOrders,
       totalPages,
       currentPage: page,
+      lastRun: new Date().toISOString(),
       orders: parsedResults,
     };
 
@@ -900,6 +1008,7 @@ async function groupOrders(page = 1) {
     console.log(
       `Tổng số đơn hàng: ${totalOrders}, Tổng số trang: ${totalPages}`
     );
+    console.log(`groupOrders thực thi trong ${Date.now() - startTime}ms`);
     return response;
   } catch (error) {
     console.error("Lỗi trong groupOrders:", error.message, error.stack);
@@ -907,13 +1016,101 @@ async function groupOrders(page = 1) {
   }
 }
 
-async function main(page = 1) {
+async function syncOrderStatus() {
+  const startTime = Date.now();
   try {
-    console.log("Khởi động công cụ giao hàng...");
+    const connection = await mysql.createConnection(dbConfig);
+    const [orders] = await connection.query(
+      `
+      SELECT id_order
+      FROM orders
+      WHERE status = 'Chờ xác nhận giao/lấy hàng'
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+      `
+    );
+    console.log("Số lượng đơn hàng cần đồng bộ trạng thái:", orders.length);
+
+    let api2RequestCount = 0;
+    const limit = pLimit(10);
+    const statusPromises = orders.map((order) =>
+      limit(() => {
+        api2RequestCount++;
+        return axios
+          .get(`${API_2_BASE}?qc=${order.id_order}`)
+          .then((res) => ({
+            MaPX: order.id_order,
+            Tinhtranggiao: res.data.Tinhtranggiao || "",
+          }))
+          .catch((err) => {
+            console.error(
+              `Lỗi khi cập nhật trạng thái cho ${order.id_order}:`,
+              err.message
+            );
+            return null;
+          });
+      })
+    );
+
+    const settledResults = await Promise.allSettled(statusPromises);
+    const results = settledResults
+      .filter(
+        (result) => result.status === "fulfilled" && result.value !== null
+      )
+      .map((result) => result.value);
+
+    console.log(
+      "Tổng số yêu cầu API_2 trong syncOrderStatus:",
+      api2RequestCount
+    );
+
+    if (results.length > 0) {
+      const values = results.map((result) => [
+        result.Tinhtranggiao,
+        result.MaPX,
+      ]);
+      const [updateResult] = await connection.query(
+        `
+        UPDATE orders
+        SET status = ?
+        WHERE id_order = ?
+        `,
+        values.flat()
+      );
+      console.log(
+        "Số dòng ảnh hưởng khi cập nhật trạng thái:",
+        updateResult.affectedRows
+      );
+    }
+
+    await connection.end();
+    console.log(`syncOrderStatus thực thi trong ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.error("Lỗi trong syncOrderStatus:", error.message);
+    throw error;
+  }
+}
+
+async function main(page = 1, io) {
+  const startTime = Date.now();
+  try {
+    console.log("Khởi động công cụ giao hàng lúc:", new Date().toISOString());
+
+    console.log("Bước 0: Cập nhật trạng thái ưu tiên đơn hàng...");
+    await updatePriorityStatus(io);
+    console.log("Đã cập nhật trạng thái ưu tiên");
 
     console.log("Bước 1: Lấy và lưu đơn hàng...");
     const orders = await fetchAndSaveOrders();
     console.log("Đã lưu đơn hàng:", orders.length);
+
+    if (orders.length === 0) {
+      console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
+      const groupedOrders = await groupOrders(page);
+      console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+      console.log("Công cụ giao hàng hoàn tất.");
+      console.log(`main thực thi trong ${Date.now() - startTime}ms`);
+      return groupedOrders;
+    }
 
     console.log("Bước 2: Chuẩn hóa và ánh xạ địa chỉ...");
     const standardizedOrders = await standardizeAddresses(orders);
@@ -932,6 +1129,7 @@ async function main(page = 1) {
     console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
 
     console.log("Công cụ giao hàng hoàn tất.");
+    console.log(`main thực thi trong ${Date.now() - startTime}ms`);
     return groupedOrders;
   } catch (error) {
     console.error("Lỗi trong main:", error.message);
@@ -939,10 +1137,25 @@ async function main(page = 1) {
   }
 }
 
+// Lập lịch chạy tự động
+cron.schedule("*/5 * * * *", () => {
+  console.log("Chạy quy trình giao hàng lúc:", new Date().toISOString());
+  main(1).catch((error) => console.error("Lỗi khi chạy main:", error.message));
+});
+
+cron.schedule("*/15 * * * *", () => {
+  console.log("Chạy đồng bộ trạng thái lúc:", new Date().toISOString());
+  syncOrderStatus().catch((error) =>
+    console.error("Lỗi khi chạy syncOrderStatus:", error.message)
+  );
+});
+
 module.exports = {
   main,
   groupOrders,
   standardizeAddresses,
   updateStandardizedAddresses,
   calculateDistances,
+  syncOrderStatus,
+  updatePriorityStatus,
 };
