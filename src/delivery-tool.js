@@ -440,16 +440,18 @@ async function fetchAndSaveOrders() {
       order.DcGiaohang,
       order.Tinhtranggiao,
       order.SOKM,
+      order.Ghichu,
       new Date(),
     ]);
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, SOKM, created_at)
+      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, created_at)
       VALUES ?
       ON DUPLICATE KEY UPDATE
       address = VALUES(address),
       status = VALUES(status),
       SOKM = VALUES(SOKM),
+      delivery_note = VALUES(delivery_note),
       created_at = VALUES(created_at)
       `,
       [values]
