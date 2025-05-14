@@ -979,7 +979,7 @@ async function updateStandardizedAddresses(data) {
   }
 }
 
-async function groupOrders(page = 1) {
+async function groupOrders(page = 1, day = "today") {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -988,6 +988,18 @@ async function groupOrders(page = 1) {
 
     if (!Number.isInteger(page) || page < 1) {
       throw new Error("Page phải là số nguyên dương");
+    }
+
+    // ✅ Điều kiện ngày theo tab
+    let dateCondition = "";
+    if (day === "today") {
+      dateCondition = "DATE(oa.created_at) = CURDATE()";
+    } else if (day === "yesterday") {
+      dateCondition = "DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY";
+    } else if (day === "older") {
+      dateCondition = "DATE(oa.created_at) < CURDATE() - INTERVAL 1 DAY";
+    } else {
+      throw new Error("Tham số 'day' không hợp lệ");
     }
 
     const [totalResult] = await connection.execute(
@@ -999,13 +1011,12 @@ async function groupOrders(page = 1) {
         AND oa.distance IS NOT NULL 
         AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND ${dateCondition}
       `
     );
 
     const totalOrders = totalResult[0].total;
     const totalPages = Math.ceil(totalOrders / pageSize);
-
-    console.log(`groupOrders: page=${page}, pageSize=${pageSize}, offset=${offset}`);
 
     const query = `
       SELECT 
@@ -1026,8 +1037,8 @@ async function groupOrders(page = 1) {
         AND oa.distance IS NOT NULL 
         AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND ${dateCondition}
       ORDER BY
-        -- 1. Nhóm ưu tiên logic tổng thể
         CASE
           WHEN oa.status = 1 AND o.priority = 2 THEN 1
           WHEN oa.status = 0 AND o.priority = 2 THEN 2
@@ -1044,24 +1055,15 @@ async function groupOrders(page = 1) {
                AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 8
           ELSE 9
         END ASC,
-
-        -- 2. Nếu deadline hôm nay mà còn xa, đẩy xuống sau
         CASE 
           WHEN DATE(o.delivery_deadline) = CURDATE()
             AND TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline) > 120 THEN 1
           ELSE 0
         END ASC,
-
-        -- 3. Ưu tiên deadline gần
         o.delivery_deadline ASC,
-
-        -- 4. Gần hơn và nhanh hơn lên trước
         oa.distance ASC,
         oa.travel_time ASC,
-
-        -- 5. Ưu tiên đơn tạo trước
         oa.created_at ASC
-
       LIMIT ${pageSize} OFFSET ${offset}
     `;
 
@@ -1087,18 +1089,13 @@ async function groupOrders(page = 1) {
 
     await connection.end();
 
-    const response = {
+    return {
       totalOrders,
       totalPages,
       currentPage: page,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
       orders: parsedResults,
     };
-
-    console.log(`Số đơn hàng trang ${page}:`, parsedResults.length);
-    console.log(`Tổng số đơn hàng: ${totalOrders}, Tổng số trang: ${totalPages}`);
-    console.log(`groupOrders thực thi trong ${Date.now() - startTime}ms`);
-    return response;
   } catch (error) {
     console.error("Lỗi trong groupOrders:", error.message, error.stack);
     throw error;
@@ -1599,11 +1596,15 @@ app.get("/grouped-orders", async (req, res) => {
   try {
     console.time("grouped-orders");
     const page = parseInt(req.query.page) || 1;
+    const day = req.query.day || "today";
+
     if (isNaN(page) || page < 1) {
       return res.status(400).json({ error: "Page phải là số nguyên dương" });
     }
-    console.log(`Gọi groupOrders với page: ${page}`);
-    const groupedOrders = await groupOrders(page);
+
+    console.log(`Gọi groupOrders với page: ${page}, day: ${day}`);
+    const groupedOrders = await groupOrders(page, day);
+
     console.timeEnd("grouped-orders");
     res.status(200).json(groupedOrders);
   } catch (error) {

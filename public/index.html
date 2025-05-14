@@ -4,10 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Danh sách đơn hàng</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
       body {
         font-family: Arial, sans-serif;
+        font-size: 13px;
         margin: 20px;
         background-color: #f4f4f4;
       }
@@ -18,53 +21,40 @@
       .container {
         max-width: 100%;
         margin: 0 auto;
+        padding-bottom: 80px;
       }
       table {
         width: 100%;
         border-collapse: collapse;
-        background-color: #fff;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         margin-bottom: 20px;
       }
       th,
       td {
-        padding: 12px;
+        padding: 10px;
         text-align: center;
-        border-bottom: 1px solid #ddd;
+        border: 1px solid #ddd;
+        height: 60px;
+        vertical-align: middle;
+        font-size: 13px;
       }
       th {
         background-color: #4caf50;
         color: white;
       }
       tr:hover {
-        background-color: #f5f5f5;
+        filter: brightness(0.95);
       }
-      .priority-high {
-        background-color: #ffe6e6;
-        font-weight: bold;
+      td.priority-urgent {
+        background-color: #ff9999;
+        color: #660000;
       }
-      .priority-warning {
-        background-color: #f38c8c;
-        font-weight: bold;
+      td.priority-high {
+        background-color: #ffe5e5;
+        color: #804040;
       }
-      .pagination {
-        text-align: center;
-      }
-      .pagination button {
-        padding: 8px 12px;
-        margin: 0 5px;
-        border: none;
-        background-color: #4caf50;
-        color: white;
-        cursor: pointer;
-        border-radius: 4px;
-      }
-      .pagination button:disabled {
-        background-color: #ccc;
-        cursor: not-allowed;
-      }
-      .pagination button:hover:not(:disabled) {
-        background-color: #45a049;
+      td.priority-normal {
+        background-color: #ffffff;
+        color: #000000;
       }
       .error {
         color: red;
@@ -82,35 +72,60 @@
         margin-top: 10px;
         display: none;
       }
+      .pagination {
+        position: fixed;
+        bottom: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: #fff;
+        padding: 10px 20px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.2);
+        border-radius: 8px;
+        z-index: 1000;
+      }
+      .pagination button {
+        padding: 8px 12px;
+        margin: 0 5px;
+        border: none;
+        background-color: #4caf50;
+        color: white;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+      .pagination button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      .pagination button:hover:not(:disabled) {
+        background-color: #45a049;
+      }
     </style>
   </head>
   <body>
     <div class="container">
+      <ul class="nav nav-tabs mb-3" id="orderTabs" role="tablist">
+        <li class="nav-item">
+          <button class="nav-link active" data-bs-toggle="tab" data-day="today" role="tab">Hôm nay</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-day="yesterday" role="tab">Hôm qua</button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link" data-bs-toggle="tab" data-day="older" role="tab">Trước nữa</button>
+        </li>
+      </ul>
       <h1>Danh sách đơn hàng</h1>
       <div id="notification" class="notification"></div>
       <div id="loading" class="loading">Đang tải dữ liệu...</div>
       <div id="error" class="error" style="display: none"></div>
-      <table id="orders-table" style="display: none">
-        <thead>
-          <tr>
-            <th>Mã đơn hàng</th>
-            <th>Địa chỉ giao hàng</th>
-            <th>Khoảng cách quy định (km)</th>
-            <th>Khoảng cách sau tính (km)</th>
-            <th>Thời gian di chuyển (phút)</th>
-            <th>Độ Ưu tiên</th>
-            <th>Thời gian tạo</th>
-            <th>Thời gian giao khách yêu cầu</th>
-            <th>Khách Note</th>
-          </tr>
-        </thead>
-        <tbody id="orders-body"></tbody>
-      </table>
+      <div id="orders-wrapper"></div>
       <div class="pagination" id="pagination"></div>
     </div>
 
     <script>
       const apiUrl = "/grouped-orders";
+      let currentDay = "today";
       let currentPage = 1;
       let totalPages = 1;
 
@@ -126,23 +141,21 @@
         setTimeout(() => {
           document.getElementById("notification").style.display = "none";
         }, 3000);
-        fetchOrders(currentPage);
+        fetchOrders(currentDay, currentPage);
       });
 
-      async function fetchOrders(page) {
+      async function fetchOrders(day = "today", page = 1) {
         try {
           document.getElementById("loading").style.display = "block";
           document.getElementById("error").style.display = "none";
-          document.getElementById("orders-table").style.display = "none";
 
-          const response = await fetch(`${apiUrl}?page=${page}`);
+          const response = await fetch(`${apiUrl}?day=${day}&page=${page}`);
           if (!response.ok) {
             throw new Error("Lỗi khi lấy dữ liệu từ API");
           }
           const data = await response.json();
-
-          totalPages = data.totalPages;
-          currentPage = data.currentPage;
+          totalPages = data.totalPages || 1;
+          currentPage = data.currentPage || 1;
           renderOrders(data.orders);
           renderPagination();
         } catch (error) {
@@ -151,6 +164,28 @@
         } finally {
           document.getElementById("loading").style.display = "none";
         }
+      }
+
+      function renderPagination() {
+        const container = document.getElementById("pagination");
+        container.innerHTML = "";
+
+        const prev = document.createElement("button");
+        prev.textContent = "Trang trước";
+        prev.disabled = currentPage === 1;
+        prev.onclick = () => fetchOrders(currentDay, currentPage - 1);
+
+        const next = document.createElement("button");
+        next.textContent = "Trang sau";
+        next.disabled = currentPage === totalPages;
+        next.onclick = () => fetchOrders(currentDay, currentPage + 1);
+
+        const info = document.createElement("span");
+        info.textContent = ` Trang ${currentPage} / ${totalPages} `;
+
+        container.appendChild(prev);
+        container.appendChild(info);
+        container.appendChild(next);
       }
 
       function formatDateTime(dateString) {
@@ -167,77 +202,88 @@
       }
 
       function renderOrders(orders) {
-        const tbody = document.getElementById("orders-body");
-        tbody.innerHTML = "";
+        const wrapper = document.getElementById("orders-wrapper");
+        wrapper.innerHTML = "";
         const now = new Date();
+
+        const table = document.createElement("table");
+        table.className = "table table-bordered";
+        table.innerHTML = `
+          <thead>
+            <tr>
+              <th>Mã đơn hàng</th>
+              <th>Địa chỉ giao hàng</th>
+              <th>Khoảng cách quy định (km)</th>
+              <th>Khoảng cách sau tính (km)</th>
+              <th>Thời gian di chuyển (phút)</th>
+              <th>Độ Ưu tiên</th>
+              <th>Thời gian tạo</th>
+              <th>Thời gian giao khách yêu cầu</th>
+              <th>Khách Note</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
+
+        const tbody = table.querySelector("tbody");
 
         orders.forEach((order) => {
           const createdAt = new Date(order.created_at);
           const deadline = new Date(order.delivery_deadline);
           const timeToDeadline = (deadline - now) / (1000 * 60);
 
-          const row = document.createElement("tr");
-
           let priorityText = "Bình thường";
+          let priorityClass = "priority-normal";
 
           if (order.priority === 2) {
-            row.classList.add("priority-warning");
             priorityText = "Khẩn cấp";
+            priorityClass = "priority-urgent";
           } else if (order.priority === 1) {
-            row.classList.add("priority-high");
             priorityText = "Ưu tiên cao";
-          } else {
-            priorityText = "Thường";
+            priorityClass = "priority-high";
           }
 
+          const cells = [
+            order.id_order,
+            order.address,
+            order.SOKM !== null ? order.SOKM : "N/A",
+            order.distance !== null ? order.distance.toFixed(2) : "N/A",
+            order.travel_time,
+            priorityText,
+            formatDateTime(order.created_at),
+            formatDateTime(order.delivery_deadline),
+            order.delivery_note
+          ];
+
+          const row = document.createElement("tr");
           if (order.status === 1 && timeToDeadline <= 120) {
             row.style.borderLeft = "6px solid red";
           }
 
-          row.innerHTML = `
-            <td>${order.id_order}</td>
-            <td>${order.address}</td>
-            <td>${order.SOKM !== null ? order.SOKM : "N/A"}</td>
-            <td>${order.distance !== null ? order.distance.toFixed(2) : "N/A"}</td>
-            <td>${order.travel_time}</td>
-            <td>${priorityText}</td>
-            <td>${formatDateTime(order.created_at)}</td>
-            <td>${formatDateTime(order.delivery_deadline)}</td>
-            <td>${order.delivery_note}</td>
-          `;
+          cells.forEach((text) => {
+            const td = document.createElement("td");
+            td.textContent = text;
+            td.classList.add(priorityClass);
+            row.appendChild(td);
+          });
 
           tbody.appendChild(row);
         });
 
-        document.getElementById("orders-table").style.display = "table";
+        wrapper.appendChild(table);
       }
 
-      function renderPagination() {
-        const pagination = document.getElementById("pagination");
-        pagination.innerHTML = "";
-
-        const prevButton = document.createElement("button");
-        prevButton.textContent = "Trang trước";
-        prevButton.disabled = currentPage === 1;
-        prevButton.addEventListener("click", () => {
-          if (currentPage > 1) fetchOrders(currentPage - 1);
+      document.querySelectorAll('#orderTabs .nav-link').forEach(tab => {
+        tab.addEventListener('click', () => {
+          document.querySelectorAll('#orderTabs .nav-link').forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          const day = tab.getAttribute('data-day');
+          currentDay = day;
+          fetchOrders(day);
         });
-        pagination.appendChild(prevButton);
+      });
 
-        const nextButton = document.createElement("button");
-        nextButton.textContent = "Trang sau";
-        nextButton.disabled = currentPage === totalPages;
-        nextButton.addEventListener("click", () => {
-          if (currentPage < totalPages) fetchOrders(currentPage + 1);
-        });
-        pagination.appendChild(nextButton);
-
-        const pageInfo = document.createElement("span");
-        pageInfo.textContent = ` Trang ${currentPage} / ${totalPages} `;
-        pagination.appendChild(pageInfo);
-      }
-
-      fetchOrders(currentPage);
+      fetchOrders(currentDay);
     </script>
   </body>
 </html>
