@@ -7,7 +7,7 @@ const mysql = require("mysql2/promise");
 const { OpenAI } = require("openai");
 const pLimitModule = require("p-limit");
 const cron = require("node-cron");
-const moment = require('moment-timezone');
+const moment = require("moment-timezone");
 
 const pLimit =
   typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
@@ -446,7 +446,7 @@ async function fetchAndSaveOrders() {
       order.Tinhtranggiao,
       order.SOKM,
       order.Ghichu,
-      new Date(),
+      moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
     ]);
     const [insertResult] = await connection.query(
       `
@@ -1001,12 +1001,11 @@ async function groupOrders(page = 1) {
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
       `
     );
+
     const totalOrders = totalResult[0].total;
     const totalPages = Math.ceil(totalOrders / pageSize);
 
-    console.log(
-      `groupOrders: page=${page}, pageSize=${pageSize}, offset=${offset}`
-    );
+    console.log(`groupOrders: page=${page}, pageSize=${pageSize}, offset=${offset}`);
 
     const query = `
       SELECT 
@@ -1019,93 +1018,72 @@ async function groupOrders(page = 1) {
         oa.created_at,
         o.SOKM,
         o.priority,
-        o.delivery_deadline
+        o.delivery_deadline,
+        o.delivery_note
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
         AND oa.distance IS NOT NULL 
         AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-      ORDER BY 
-        CASE 
-          WHEN o.priority > 0 THEN 0
-          ELSE 1
+      ORDER BY
+        -- 1. Nhóm ưu tiên logic tổng thể
+        CASE
+          WHEN oa.status = 1 AND o.priority = 2 THEN 1
+          WHEN oa.status = 0 AND o.priority = 2 THEN 2
+          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
+          WHEN oa.status = 1 AND o.priority = 0 THEN 4
+          WHEN oa.status = 1 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 5
+          WHEN oa.status = 0 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 6
+          WHEN oa.status = 0 AND o.priority = 0 THEN 7
+          WHEN oa.status = 0 AND o.priority = 1 
+               AND o.delivery_deadline IS NOT NULL 
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 8
+          ELSE 9
         END ASC,
+
+        -- 2. Nếu deadline hôm nay mà còn xa, đẩy xuống sau
         CASE 
-          WHEN o.priority > 0 THEN o.delivery_deadline
-          ELSE NULL
+          WHEN DATE(o.delivery_deadline) = CURDATE()
+            AND TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline) > 120 THEN 1
+          ELSE 0
         END ASC,
-        CASE 
-          WHEN o.priority > 0 THEN oa.travel_time
-          ELSE NULL
-        END ASC,
-        CASE 
-          WHEN o.priority > 0 AND oa.status = 1 THEN 0
-          ELSE 1
-        END ASC,
-        CASE 
-          WHEN o.priority > 0 AND oa.status = 1 THEN oa.created_at
-          ELSE NULL
-        END ASC,
-        oa.status DESC,
-        CASE 
-          WHEN oa.status = 1 THEN oa.created_at
-          ELSE NULL
-        END ASC,
-        CASE 
-          WHEN oa.status = 1 THEN oa.distance
-          ELSE NULL
-        END ASC,
-        CASE 
-          WHEN oa.status = 0 THEN oa.distance
-          ELSE NULL
-        END ASC,
-        CASE 
-          WHEN oa.status = 0 THEN oa.travel_time
-          ELSE NULL
-        END ASC
-      LIMIT ${parseInt(pageSize)} OFFSET ${parseInt(offset)}
+
+        -- 3. Ưu tiên deadline gần
+        o.delivery_deadline ASC,
+
+        -- 4. Gần hơn và nhanh hơn lên trước
+        oa.distance ASC,
+        oa.travel_time ASC,
+
+        -- 5. Ưu tiên đơn tạo trước
+        oa.created_at ASC
+
+      LIMIT ${pageSize} OFFSET ${offset}
     `;
 
     const [results] = await connection.execute(query);
 
-    const parsedResults = results.map((row) => {
-      let deliveryDeadline = null;
-      if (row.delivery_deadline) {
-        try {
-          const date = new Date(row.delivery_deadline);
-          if (!isNaN(date.getTime())) {
-            // Chuẩn hóa múi giờ +07
-            const offset = 7 * 60; // +07:00
-            const localDate = new Date(
-              date.getTime() + (offset - date.getTimezoneOffset()) * 60 * 1000
-            );
-            deliveryDeadline = localDate
-              .toISOString()
-              .slice(0, 19)
-              .replace("T", " ");
-          }
-        } catch (error) {
-          console.warn(
-            `Lỗi khi chuẩn hóa thời gian cho id_order ${row.id_order}:`,
-            error.message
-          );
-        }
-      }
-
-      return {
-        id_order: row.id_order,
-        address: row.address,
-        source: row.source,
-        distance: row.distance,
-        travel_time: row.travel_time,
-        status: row.status,
-        created_at: row.created_at,
-        SOKM: row.SOKM,
-        priority: row.priority,
-        delivery_deadline: deliveryDeadline,
-      };
-    });
+    const parsedResults = results.map((row) => ({
+      id_order: row.id_order,
+      address: row.address,
+      source: row.source,
+      distance: row.distance,
+      travel_time: row.travel_time,
+      status: row.status,
+      created_at: row.created_at
+        ? moment(row.created_at).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      SOKM: row.SOKM,
+      priority: row.priority,
+      delivery_deadline: row.delivery_deadline
+        ? moment(row.delivery_deadline).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      delivery_note: row.delivery_note,
+    }));
 
     await connection.end();
 
@@ -1113,14 +1091,12 @@ async function groupOrders(page = 1) {
       totalOrders,
       totalPages,
       currentPage: page,
-      lastRun: moment().tz('Asia/Ho_Chi_Minh').format(),
+      lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
       orders: parsedResults,
     };
 
     console.log(`Số đơn hàng trang ${page}:`, parsedResults.length);
-    console.log(
-      `Tổng số đơn hàng: ${totalOrders}, Tổng số trang: ${totalPages}`
-    );
+    console.log(`Tổng số đơn hàng: ${totalOrders}, Tổng số trang: ${totalPages}`);
     console.log(`groupOrders thực thi trong ${Date.now() - startTime}ms`);
     return response;
   } catch (error) {
@@ -1335,8 +1311,10 @@ async function analyzeDeliveryNote() {
           travel_time: order.travel_time,
         };
         console.log(input);
-        
-        const currentTime = moment().tz('Asia/Ho_Chi_Minh').format('YYYY-MM-DD HH:mm:ss');
+
+        const currentTime = moment()
+          .tz("Asia/Ho_Chi_Minh")
+          .format("YYYY-MM-DD HH:mm:ss");
         const promptWithTime = `
 Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhiệm vụ của bạn là:
 
@@ -1344,12 +1322,12 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 - Phân tích \`Ghichu\` để xác định:
   - \`delivery_deadline\`: Thời điểm giao hàng mong muốn (định dạng \`YYYY-MM-DD HH:mm:ss\`, múi giờ hệ thống, hoặc \`null\` nếu không xác định được).
   - \`priority\`: Mức độ ưu tiên giao hàng (2: gấp, 1: ưu tiên, 0: bình thường).
-
+**travel_time là: ${input.travel_time}** 
 **Thời gian hiện tại là: ${currentTime}**.
 
 **Thời gian làm việc:**
 - Bắt đầu: 08:10
-- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:30**)
+- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:40**)
 - Nghỉ trưa: 12:00 – 13:30
 
 ### QUY TẮC XỬ LÝ:
@@ -1357,21 +1335,23 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 1. **Ưu tiên gấp (priority = 2)**:
    - Nếu \`Ghichu\` chứa từ: "gấp", "ngay", "nhanh", "nhanh tí", "liền", "ngay lập tức", "som nhat", "len nhe", "gap", "sn", "nhah" →
      - \`delivery_deadline\` = thời gian hiện tại + travel_time + 15 phút
-     - Nếu > 17:30:00 → giới hạn thành 17:30:00
+     - Nếu > 17:40:00 → giới hạn thành 17:40:00
+     - Nếu < 08:00:00 → giới hạn thành 08:00:00 + travel_time + 15 phút
+     - Nếu > 12:00:00 và < 13:30:00 → giới hạn thành 13:30:00 + travel_time + 15 phút
      - \`priority\` = 2
 
 2. **Thời gian cụ thể (priority = 1 hoặc 2)**:
    - Nếu \`Ghichu\` chứa "giao trước" + giờ (vd: "trước 16h", "trc 14:30", "trước ăn trưa") →
      - Trừ 15 phút (5 phút buffer + 10 phút chuẩn bị)
      - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
-     - Nếu là "trước ăn tối": 17:30:00 - 5 phút (buffer) - 10 phút = 17:15:00
+     - Nếu là "trước ăn tối": 17:40:00 - 5 phút (buffer) - 10 phút = 17:15:00
      - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
-     - Nếu giờ vượt ngoài 08:00 – 17:30 → giới hạn về khung hợp lệ
+     - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
      - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
 
 3. **Mơ hồ (priority = 1 hoặc 2)**:
    - "đầu giờ chiều" → 13:30:00 → \`priority\` = 1
-   - "chiều nay", "hôm nay" → trước 17:30 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
+   - "chiều nay", "hôm nay" → trước 17:40 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
    - "sáng mai", "ngày mai đầu giờ" → 08:00:00 ngày mai → \`priority\` = 1
    - "ngày mai chiều", "ngày mai tối" → 13:30:00 ngày mai → \`priority\` = 1
    - "ngày mốt", "ngày mốt chiều" → 08:00:00 hoặc 13:30:00 ngày mốt → \`priority\` = 1
@@ -1473,10 +1453,10 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
         try {
           const [updateResult] = await connection.query(
             `
-            UPDATE orders
-            SET priority = ?, delivery_deadline = ?
-            WHERE id_order = ?
-            `,
+        UPDATE orders
+        SET priority = ?, delivery_deadline = ?
+        WHERE id_order = ?
+        `,
             [priority, deliveryDeadline, idOrder]
           );
           console.log(
@@ -1505,7 +1485,10 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 async function main(page = 1, io) {
   const startTime = Date.now();
   try {
-    console.log("Khởi động công cụ giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
+    console.log(
+      "Khởi động công cụ giao hàng lúc:",
+      moment().tz("Asia/Ho_Chi_Minh").format()
+    );
     console.log(
       "================================================================="
     );
@@ -1591,7 +1574,10 @@ main(1, io).catch((error) =>
 
 // Lập lịch chạy tự động mỗi 5 phút
 cron.schedule("*/5 * * * *", () => {
-  console.log("Chạy quy trình giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
+  console.log(
+    "Chạy quy trình giao hàng lúc:",
+    moment().tz("Asia/Ho_Chi_Minh").format()
+  );
   main(1, io).catch((error) =>
     console.error("Lỗi khi chạy main:", error.message)
   );
@@ -1599,7 +1585,10 @@ cron.schedule("*/5 * * * *", () => {
 
 // Lập lịch đồng bộ trạng thái mỗi 15 phút
 cron.schedule("*/15 * * * *", () => {
-  console.log("Chạy quy trình giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
+  console.log(
+    "Chạy quy trình giao hàng lúc:",
+    moment().tz("Asia/Ho_Chi_Minh").format()
+  );
   syncOrderStatus().catch((error) =>
     console.error("Lỗi khi chạy syncOrderStatus:", error.message)
   );

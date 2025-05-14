@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -16,7 +16,7 @@
         color: #333;
       }
       .container {
-        max-width: 85%;
+        max-width: 100%;
         margin: 0 auto;
       }
       table {
@@ -98,8 +98,10 @@
             <th>Khoảng cách quy định (km)</th>
             <th>Khoảng cách sau tính (km)</th>
             <th>Thời gian di chuyển (phút)</th>
-            <th>Ưu tiên</th>
+            <th>Độ Ưu tiên</th>
             <th>Thời gian tạo</th>
+            <th>Thời gian giao khách yêu cầu</th>
+            <th>Khách Note</th>
           </tr>
         </thead>
         <tbody id="orders-body"></tbody>
@@ -112,7 +114,6 @@
       let currentPage = 1;
       let totalPages = 1;
 
-      // Kết nối Socket.io
       const socket = io();
 
       socket.on("connect", () => {
@@ -120,15 +121,12 @@
       });
 
       socket.on("statusUpdated", (data) => {
-        console.log("Received statusUpdated:", data);
-        document.getElementById(
-          "notification"
-        ).textContent = `${data.message} (${data.updatedCount} đơn hàng)`;
+        document.getElementById("notification").textContent = `${data.message} (${data.updatedCount} đơn hàng)`;
         document.getElementById("notification").style.display = "block";
         setTimeout(() => {
           document.getElementById("notification").style.display = "none";
         }, 3000);
-        fetchOrders(currentPage); // Làm mới danh sách đơn hàng
+        fetchOrders(currentPage);
       });
 
       async function fetchOrders(page) {
@@ -148,49 +146,65 @@
           renderOrders(data.orders);
           renderPagination();
         } catch (error) {
-          document.getElementById(
-            "error"
-          ).textContent = `Lỗi: ${error.message}`;
+          document.getElementById("error").textContent = `Lỗi: ${error.message}`;
           document.getElementById("error").style.display = "block";
         } finally {
           document.getElementById("loading").style.display = "none";
         }
       }
 
+      function formatDateTime(dateString) {
+        if (!dateString) return "Không Có";
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return "Không Có";
+        const d = String(date.getDate()).padStart(2, "0");
+        const m = String(date.getMonth() + 1).padStart(2, "0");
+        const y = date.getFullYear();
+        const h = String(date.getHours()).padStart(2, "0");
+        const min = String(date.getMinutes()).padStart(2, "0");
+        const s = String(date.getSeconds()).padStart(2, "0");
+        return `${d}/${m}/${y} ${h}:${min}:${s}`;
+      }
+
       function renderOrders(orders) {
         const tbody = document.getElementById("orders-body");
         tbody.innerHTML = "";
+        const now = new Date();
 
         orders.forEach((order) => {
           const createdAt = new Date(order.created_at);
-          const now = new Date();
-          const diffMinutes = (now - createdAt) / (1000 * 60);
+          const deadline = new Date(order.delivery_deadline);
+          const timeToDeadline = (deadline - now) / (1000 * 60);
 
           const row = document.createElement("tr");
 
           let priorityText = "Bình thường";
 
-          if (order.status === 1) {
-            if (diffMinutes > 30) {
-              row.classList.add("priority-warning");
-              priorityText = "Khẩn cấp";
-            } else {
-              row.classList.add("priority-high");
-              if (diffMinutes > 15) {
-                priorityText = "Cao";
-              }
-            }
+          if (order.priority === 2) {
+            row.classList.add("priority-warning");
+            priorityText = "Khẩn cấp";
+          } else if (order.priority === 1) {
+            row.classList.add("priority-high");
+            priorityText = "Ưu tiên cao";
+          } else {
+            priorityText = "Thường";
+          }
+
+          if (order.status === 1 && timeToDeadline <= 120) {
+            row.style.borderLeft = "6px solid red";
           }
 
           row.innerHTML = `
-      <td>${order.id_order}</td>
-      <td>${order.address}</td>
-      <td>${order.SOKM !== null ? order.SOKM : "N/A"}</td>
-      <td>${order.distance.toFixed(2)}</td>
-      <td>${order.travel_time}</td>
-      <td>${priorityText}</td>
-      <td>${createdAt.toLocaleString()}</td>
-    `;
+            <td>${order.id_order}</td>
+            <td>${order.address}</td>
+            <td>${order.SOKM !== null ? order.SOKM : "N/A"}</td>
+            <td>${order.distance !== null ? order.distance.toFixed(2) : "N/A"}</td>
+            <td>${order.travel_time}</td>
+            <td>${priorityText}</td>
+            <td>${formatDateTime(order.created_at)}</td>
+            <td>${formatDateTime(order.delivery_deadline)}</td>
+            <td>${order.delivery_note}</td>
+          `;
 
           tbody.appendChild(row);
         });
@@ -206,9 +220,7 @@
         prevButton.textContent = "Trang trước";
         prevButton.disabled = currentPage === 1;
         prevButton.addEventListener("click", () => {
-          if (currentPage > 1) {
-            fetchOrders(currentPage - 1);
-          }
+          if (currentPage > 1) fetchOrders(currentPage - 1);
         });
         pagination.appendChild(prevButton);
 
@@ -216,9 +228,7 @@
         nextButton.textContent = "Trang sau";
         nextButton.disabled = currentPage === totalPages;
         nextButton.addEventListener("click", () => {
-          if (currentPage < totalPages) {
-            fetchOrders(currentPage + 1);
-          }
+          if (currentPage < totalPages) fetchOrders(currentPage + 1);
         });
         pagination.appendChild(nextButton);
 
@@ -227,7 +237,6 @@
         pagination.appendChild(pageInfo);
       }
 
-      // Tải dữ liệu trang đầu tiên khi khởi động
       fetchOrders(currentPage);
     </script>
   </body>
