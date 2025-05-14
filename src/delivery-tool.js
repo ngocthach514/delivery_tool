@@ -7,6 +7,7 @@ const mysql = require("mysql2/promise");
 const { OpenAI } = require("openai");
 const pLimitModule = require("p-limit");
 const cron = require("node-cron");
+const moment = require('moment-timezone');
 
 const pLimit =
   typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
@@ -1112,7 +1113,7 @@ async function groupOrders(page = 1) {
       totalOrders,
       totalPages,
       currentPage: page,
-      lastRun: new Date().toISOString(),
+      lastRun: moment().tz('Asia/Ho_Chi_Minh').format(),
       orders: parsedResults,
     };
 
@@ -1309,6 +1310,8 @@ async function analyzeDeliveryNote() {
       LEFT JOIN orders_address oa ON o.id_order = oa.id_order
       WHERE o.delivery_note IS NOT NULL
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND priority = 0
+        AND delivery_deadline IS NULL
       `
     );
     console.log(`Số lượng đơn hàng có ghi chú: ${orders.length}`);
@@ -1329,13 +1332,11 @@ async function analyzeDeliveryNote() {
         const input = {
           id_order: order.id_order,
           Ghichu: order.delivery_note,
-          travel_time: order.travel_time || 0,
+          travel_time: order.travel_time,
         };
-
-        const currentTime = new Date()
-          .toISOString()
-          .slice(0, 19)
-          .replace("T", " ");
+        console.log(input);
+        
+        const currentTime = moment().tz('Asia/Ho_Chi_Minh').format('YYYY-MM-DD HH:mm:ss');
         const promptWithTime = `
 Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhiệm vụ của bạn là:
 
@@ -1347,8 +1348,8 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 **Thời gian hiện tại là: ${currentTime}**.
 
 **Thời gian làm việc:**
-- Bắt đầu: 08:00
-- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:40**)
+- Bắt đầu: 08:10
+- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:30**)
 - Nghỉ trưa: 12:00 – 13:30
 
 ### QUY TẮC XỬ LÝ:
@@ -1356,7 +1357,7 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 1. **Ưu tiên gấp (priority = 2)**:
    - Nếu \`Ghichu\` chứa từ: "gấp", "ngay", "nhanh", "nhanh tí", "liền", "ngay lập tức", "som nhat", "len nhe", "gap", "sn", "nhah" →
      - \`delivery_deadline\` = thời gian hiện tại + travel_time + 15 phút
-     - Nếu > 17:40:00 → giới hạn thành 17:40:00
+     - Nếu > 17:30:00 → giới hạn thành 17:30:00
      - \`priority\` = 2
 
 2. **Thời gian cụ thể (priority = 1 hoặc 2)**:
@@ -1365,12 +1366,12 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
      - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
      - Nếu là "trước ăn tối": 17:30:00 - 5 phút (buffer) - 10 phút = 17:15:00
      - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
-     - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
+     - Nếu giờ vượt ngoài 08:00 – 17:30 → giới hạn về khung hợp lệ
      - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
 
 3. **Mơ hồ (priority = 1 hoặc 2)**:
    - "đầu giờ chiều" → 13:30:00 → \`priority\` = 1
-   - "chiều nay", "hôm nay" → trước 17:40 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
+   - "chiều nay", "hôm nay" → trước 17:30 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
    - "sáng mai", "ngày mai đầu giờ" → 08:00:00 ngày mai → \`priority\` = 1
    - "ngày mai chiều", "ngày mai tối" → 13:30:00 ngày mai → \`priority\` = 1
    - "ngày mốt", "ngày mốt chiều" → 08:00:00 hoặc 13:30:00 ngày mốt → \`priority\` = 1
@@ -1504,7 +1505,7 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 async function main(page = 1, io) {
   const startTime = Date.now();
   try {
-    console.log("Khởi động công cụ giao hàng lúc:", new Date().toISOString());
+    console.log("Khởi động công cụ giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
     console.log(
       "================================================================="
     );
@@ -1590,7 +1591,7 @@ main(1, io).catch((error) =>
 
 // Lập lịch chạy tự động mỗi 5 phút
 cron.schedule("*/5 * * * *", () => {
-  console.log("Chạy quy trình giao hàng lúc:", new Date().toISOString());
+  console.log("Chạy quy trình giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
   main(1, io).catch((error) =>
     console.error("Lỗi khi chạy main:", error.message)
   );
@@ -1598,7 +1599,7 @@ cron.schedule("*/5 * * * *", () => {
 
 // Lập lịch đồng bộ trạng thái mỗi 15 phút
 cron.schedule("*/15 * * * *", () => {
-  console.log("Chạy đồng bộ trạng thái lúc:", new Date().toISOString());
+  console.log("Chạy quy trình giao hàng lúc:", moment().tz('Asia/Ho_Chi_Minh').format());
   syncOrderStatus().catch((error) =>
     console.error("Lỗi khi chạy syncOrderStatus:", error.message)
   );
