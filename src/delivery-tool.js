@@ -8,7 +8,8 @@ const { OpenAI } = require("openai");
 const pLimitModule = require("p-limit");
 const cron = require("node-cron");
 
-const pLimit = typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
+const pLimit =
+  typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
 
 const app = express();
 const server = http.createServer(app);
@@ -142,7 +143,10 @@ async function getValidOrderIds() {
     const connection = await mysql.createConnection(dbConfig);
     const [rows] = await connection.execute("SELECT id_order FROM orders");
     await connection.end();
-    console.log("Valid order IDs:", rows.map((row) => row.id_order));
+    console.log(
+      "Valid order IDs:",
+      rows.map((row) => row.id_order)
+    );
     console.log(`getValidOrderIds thực thi trong ${Date.now() - startTime}ms`);
     return new Set(rows.map((row) => row.id_order));
   } catch (error) {
@@ -1012,7 +1016,9 @@ async function groupOrders(page = 1) {
         oa.travel_time,
         oa.status,
         oa.created_at,
-        o.SOKM
+        o.SOKM,
+        o.priority,
+        o.delivery_deadline
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
@@ -1020,6 +1026,26 @@ async function groupOrders(page = 1) {
         AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
       ORDER BY 
+        CASE 
+          WHEN o.priority > 0 THEN 0
+          ELSE 1
+        END ASC,
+        CASE 
+          WHEN o.priority > 0 THEN o.delivery_deadline
+          ELSE NULL
+        END ASC,
+        CASE 
+          WHEN o.priority > 0 THEN oa.travel_time
+          ELSE NULL
+        END ASC,
+        CASE 
+          WHEN o.priority > 0 AND oa.status = 1 THEN 0
+          ELSE 1
+        END ASC,
+        CASE 
+          WHEN o.priority > 0 AND oa.status = 1 THEN oa.created_at
+          ELSE NULL
+        END ASC,
         oa.status DESC,
         CASE 
           WHEN oa.status = 1 THEN oa.created_at
@@ -1042,16 +1068,43 @@ async function groupOrders(page = 1) {
 
     const [results] = await connection.execute(query);
 
-    const parsedResults = results.map((row) => ({
-      id_order: row.id_order,
-      address: row.address,
-      source: row.source,
-      distance: row.distance,
-      travel_time: row.travel_time,
-      status: row.status,
-      created_at: row.created_at,
-      SOKM: row.SOKM,
-    }));
+    const parsedResults = results.map((row) => {
+      let deliveryDeadline = null;
+      if (row.delivery_deadline) {
+        try {
+          const date = new Date(row.delivery_deadline);
+          if (!isNaN(date.getTime())) {
+            // Chuẩn hóa múi giờ +07
+            const offset = 7 * 60; // +07:00
+            const localDate = new Date(
+              date.getTime() + (offset - date.getTimezoneOffset()) * 60 * 1000
+            );
+            deliveryDeadline = localDate
+              .toISOString()
+              .slice(0, 19)
+              .replace("T", " ");
+          }
+        } catch (error) {
+          console.warn(
+            `Lỗi khi chuẩn hóa thời gian cho id_order ${row.id_order}:`,
+            error.message
+          );
+        }
+      }
+
+      return {
+        id_order: row.id_order,
+        address: row.address,
+        source: row.source,
+        distance: row.distance,
+        travel_time: row.travel_time,
+        status: row.status,
+        created_at: row.created_at,
+        SOKM: row.SOKM,
+        priority: row.priority,
+        delivery_deadline: deliveryDeadline,
+      };
+    });
 
     await connection.end();
 
@@ -1149,43 +1202,377 @@ async function syncOrderStatus() {
   }
 }
 
+async function updateOrderStatusToCompleted() {
+  const startTime = Date.now();
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const [orders] = await connection.query(
+      `
+      SELECT id_order
+      FROM orders
+      WHERE status = 'Chờ xác nhận giao/lấy hàng'
+      `
+    );
+    console.log(`Số lượng đơn hàng cần kiểm tra trạng thái: ${orders.length}`);
+
+    if (orders.length === 0) {
+      console.log("Không có đơn hàng nào cần cập nhật trạng thái.");
+      await connection.end();
+      console.log(
+        `updateOrderStatusToCompleted thực thi trong ${
+          Date.now() - startTime
+        }ms`
+      );
+      return;
+    }
+
+    const limit = pLimit(10);
+    let api2RequestCount = 0;
+
+    const statusPromises = orders.map((order) =>
+      limit(async () => {
+        api2RequestCount++;
+        try {
+          const response = await axios.get(
+            `${API_2_BASE}?qc=${order.id_order}`
+          );
+          return {
+            MaPX: order.id_order,
+            Tinhtranggiao: response.data.Tinhtranggiao,
+          };
+        } catch (err) {
+          console.error(
+            `Lỗi khi gọi API_2 cho id_order ${order.id_order}:`,
+            err.message
+          );
+          return null;
+        }
+      })
+    );
+
+    const settledResults = await Promise.allSettled(statusPromises);
+    const results = settledResults
+      .filter(
+        (result) => result.status === "fulfilled" && result.value !== null
+      )
+      .map((result) => result.value);
+
+    console.log(
+      `Tổng số yêu cầu API_2 trong updateOrderStatusToCompleted: ${api2RequestCount}`
+    );
+
+    // Lọc các đơn hàng có trạng thái "Hoàn thành"
+    const completedOrders = results.filter(
+      (order) => order.Tinhtranggiao === "Hoàn thành"
+    );
+    console.log(
+      `Số lượng đơn hàng cập nhật thành Hoàn thành: ${completedOrders.length}`
+    );
+
+    if (completedOrders.length > 0) {
+      // Cập nhật trạng thái trong bảng orders
+      const values = completedOrders.map((order) => ["Hoàn thành", order.MaPX]);
+
+      const [updateResult] = await connection.query(
+        `
+        UPDATE orders
+        SET status = ?
+        WHERE id_order = ?
+        `,
+        values.flat()
+      );
+      console.log(
+        `Số dòng ảnh hưởng khi cập nhật trạng thái Hoàn thành: ${updateResult.affectedRows}`
+      );
+    }
+
+    await connection.end();
+    console.log(
+      `updateOrderStatusToCompleted thực thi trong ${Date.now() - startTime}ms`
+    );
+  } catch (error) {
+    console.error("Lỗi trong updateOrderStatusToCompleted:", error.message);
+    throw error;
+  }
+}
+
+async function analyzeDeliveryNote() {
+  const startTime = Date.now();
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const [orders] = await connection.query(
+      `
+      SELECT o.id_order, o.delivery_note, oa.travel_time
+      FROM orders o
+      LEFT JOIN orders_address oa ON o.id_order = oa.id_order
+      WHERE o.delivery_note IS NOT NULL
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+      `
+    );
+    console.log(`Số lượng đơn hàng có ghi chú: ${orders.length}`);
+
+    if (orders.length === 0) {
+      await connection.end();
+      console.log(
+        `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
+      );
+      return;
+    }
+
+    const priorityOrders = [];
+    const limit = pLimit(5);
+
+    const aiPromises = orders.map((order) =>
+      limit(async () => {
+        const input = {
+          id_order: order.id_order,
+          Ghichu: order.delivery_note,
+          travel_time: order.travel_time || 0,
+        };
+
+        const currentTime = new Date()
+          .toISOString()
+          .slice(0, 19)
+          .replace("T", " ");
+        const promptWithTime = `
+Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhiệm vụ của bạn là:
+
+- Nhận một đơn hàng làm đầu vào, với các trường: \`id_order\`, \`Ghichu\`, và \`travel_time\` (số phút ước tính để giao đến nơi).
+- Phân tích \`Ghichu\` để xác định:
+  - \`delivery_deadline\`: Thời điểm giao hàng mong muốn (định dạng \`YYYY-MM-DD HH:mm:ss\`, múi giờ hệ thống, hoặc \`null\` nếu không xác định được).
+  - \`priority\`: Mức độ ưu tiên giao hàng (2: gấp, 1: ưu tiên, 0: bình thường).
+
+**Thời gian hiện tại là: ${currentTime}**.
+
+**Thời gian làm việc:**
+- Bắt đầu: 08:00
+- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:40**)
+- Nghỉ trưa: 12:00 – 13:30
+
+### QUY TẮC XỬ LÝ:
+
+1. **Ưu tiên gấp (priority = 2)**:
+   - Nếu \`Ghichu\` chứa từ: "gấp", "ngay", "nhanh", "nhanh tí", "liền", "ngay lập tức", "som nhat", "len nhe", "gap", "sn", "nhah" →
+     - \`delivery_deadline\` = thời gian hiện tại + travel_time + 15 phút
+     - Nếu > 17:40:00 → giới hạn thành 17:40:00
+     - \`priority\` = 2
+
+2. **Thời gian cụ thể (priority = 1 hoặc 2)**:
+   - Nếu \`Ghichu\` chứa "giao trước" + giờ (vd: "trước 16h", "trc 14:30", "trước ăn trưa") →
+     - Trừ 15 phút (5 phút buffer + 10 phút chuẩn bị)
+     - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
+     - Nếu là "trước ăn tối": 17:30:00 - 5 phút (buffer) - 10 phút = 17:15:00
+     - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
+     - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
+     - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
+
+3. **Mơ hồ (priority = 1 hoặc 2)**:
+   - "đầu giờ chiều" → 13:30:00 → \`priority\` = 1
+   - "chiều nay", "hôm nay" → trước 17:40 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
+   - "sáng mai", "ngày mai đầu giờ" → 08:00:00 ngày mai → \`priority\` = 1
+   - "ngày mai chiều", "ngày mai tối" → 13:30:00 ngày mai → \`priority\` = 1
+   - "ngày mốt", "ngày mốt chiều" → 08:00:00 hoặc 13:30:00 ngày mốt → \`priority\` = 1
+   - "tuần sau", "tuần sau trước 10h" → 08:00:00 hoặc 09:50:00 thứ Hai tuần sau → \`priority\` = 1
+
+4. **Không xác định (priority = 0)**:
+   - Ví dụ: "giao lúc nào cũng được" → \`delivery_deadline\` = null, \`priority\` = 0
+
+5. **Lỗi chính tả & ngôn ngữ tự nhiên**:
+   - "trc" = "trước", "gap" = "gấp", "sn" = "sớm", "nhah" = "nhanh"
+   - Hiểu các câu như: "giao nhanh tí đi nha", "trước ăn tối nha bạn"...
+
+**Đầu ra dạng JSON như sau:**
+\`\`\`json
+{
+  "id_order": "...",
+  "delivery_deadline": "YYYY-MM-DD HH:mm:ss",
+  "priority": 2|1|0
+}
+\`\`\`
+`;
+
+        try {
+          const response = await axios.post(process.env.LOCALAI_API_URL, {
+            model: "qwen3:8B",
+            temperature: 0,
+            messages: [
+              {
+                role: "user",
+                content: promptWithTime,
+              },
+              {
+                role: "user",
+                content: JSON.stringify(input),
+              },
+            ],
+          });
+
+          const result = JSON.parse(response.data.message.content);
+          console.log(`Kết quả AI cho id_order ${order.id_order}:`, result);
+
+          let deliveryDeadline = null;
+          if (result.delivery_deadline) {
+            try {
+              const date = new Date(result.delivery_deadline);
+              if (!isNaN(date.getTime())) {
+                deliveryDeadline = result.delivery_deadline;
+                console.log(
+                  `Thời gian hợp lệ cho id_order ${order.id_order}: ${deliveryDeadline}`
+                );
+              } else {
+                console.warn(
+                  `Thời gian không hợp lệ cho id_order ${order.id_order}: ${result.delivery_deadline}`
+                );
+              }
+            } catch (error) {
+              console.warn(
+                `Lỗi khi phân tích thời gian cho id_order ${order.id_order}:`,
+                error.message
+              );
+            }
+          }
+
+          let priority = parseInt(result.priority, 10);
+          if (isNaN(priority) || priority < 0 || priority > 2) {
+            console.warn(
+              `Priority không hợp lệ cho id_order ${order.id_order}: ${result.priority}, gán mặc định priority = 0`
+            );
+            priority = 0;
+          }
+
+          console.log(
+            `Chuẩn bị cập nhật id_order ${order.id_order}: priority=${priority}, delivery_deadline=${deliveryDeadline}`
+          );
+
+          if (priority > 0 || deliveryDeadline) {
+            priorityOrders.push([priority, deliveryDeadline, result.id_order]);
+          }
+
+          return result;
+        } catch (error) {
+          console.error(
+            `Lỗi khi gọi AI local cho id_order ${order.id_order}:`,
+            error.message
+          );
+          return null;
+        }
+      })
+    );
+
+    const results = await Promise.all(aiPromises);
+    console.log(`Số lượng kết quả từ AI: ${results.length}`);
+
+    const validResults = results.filter((result) => result !== null);
+    console.log(`Số lượng kết quả hợp lệ: ${validResults.length}`);
+
+    if (priorityOrders.length > 0) {
+      for (const [priority, deliveryDeadline, idOrder] of priorityOrders) {
+        try {
+          const [updateResult] = await connection.query(
+            `
+            UPDATE orders
+            SET priority = ?, delivery_deadline = ?
+            WHERE id_order = ?
+            `,
+            [priority, deliveryDeadline, idOrder]
+          );
+          console.log(
+            `Cập nhật thành công id_order ${idOrder}: priority=${priority}, delivery_deadline=${deliveryDeadline}, affectedRows=${updateResult.affectedRows}`
+          );
+        } catch (error) {
+          console.error(`Lỗi khi cập nhật id_order ${idOrder}:`, error.message);
+        }
+      }
+    } else {
+      console.log(
+        "Không có đơn hàng nào để cập nhật priority/delivery_deadline"
+      );
+    }
+
+    await connection.end();
+    console.log(
+      `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
+    );
+  } catch (error) {
+    console.error("Lỗi trong analyzeDeliveryNote:", error.message);
+    throw error;
+  }
+}
+
 async function main(page = 1, io) {
   const startTime = Date.now();
   try {
     console.log("Khởi động công cụ giao hàng lúc:", new Date().toISOString());
+    console.log(
+      "================================================================="
+    );
 
-    console.log("Bước 0: Cập nhật trạng thái ưu tiên đơn hàng...");
+    console.log("Bước 1: Cập nhật trạng thái đơn hàng...");
+    await updateOrderStatusToCompleted();
+    console.log("Đã cập nhật trạng thái các đơn hàng hoàn thành");
+    console.log(
+      "================================================================="
+    );
+
+    console.log("Bước 2: Cập nhật trạng thái ưu tiên đơn hàng...");
     await updatePriorityStatus(io);
     console.log("Đã cập nhật trạng thái ưu tiên");
+    console.log(
+      "================================================================="
+    );
 
-    console.log("Bước 1: Lấy và lưu đơn hàng...");
-    const orders = await fetchAndSaveOrders();
-    console.log("Đã lưu đơn hàng:", orders.length);
+    // console.log("Bước 3: Lấy và lưu đơn hàng...");
+    // const orders = await fetchAndSaveOrders();
+    // console.log("Đã lưu đơn hàng:", orders.length);
+    // console.log(
+    //   "================================================================="
+    // );
 
-    if (orders.length === 0) {
-      console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
-      const groupedOrders = await groupOrders(page);
-      console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
-      console.log("Công cụ giao hàng hoàn tất.");
-      console.log(`main thực thi trong ${Date.now() - startTime}ms`);
-      return groupedOrders;
-    }
+    console.log("Bước 4: Phân tích ghi chú đơn hàng...");
+    await analyzeDeliveryNote();
+    console.log("Đã phân tích ghi chú và cập nhật ưu tiên");
+    console.log(
+      "================================================================="
+    );
 
-    console.log("Bước 2: Chuẩn hóa và ánh xạ địa chỉ...");
-    const standardizedOrders = await standardizeAddresses(orders);
-    console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
+    // if (orders.length === 0) {
+    //   console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
+    //   const groupedOrders = await groupOrders(page);
+    //   console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+    //   console.log("Công cụ giao hàng hoàn tất.");
+    //   console.log(`main thực thi trong ${Date.now() - startTime}ms`);
+    //   return groupedOrders;
+    // }
 
-    console.log("Bước 3: Cập nhật địa chỉ chuẩn hóa...");
-    await updateStandardizedAddresses(standardizedOrders);
-    console.log("Đã cập nhật địa chỉ chuẩn hóa");
+    // console.log("Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
+    // const standardizedOrders = await standardizeAddresses(orders);
+    // console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
+    // console.log(
+    //   "================================================================="
+    // );
 
-    console.log("Bước 4: Tính toán khoảng cách và thời gian...");
+    // console.log("Bước 6: Cập nhật địa chỉ chuẩn hóa...");
+    // await updateStandardizedAddresses(standardizedOrders);
+    // console.log("Đã cập nhật địa chỉ chuẩn hóa");
+    // console.log(
+    //   "================================================================="
+    // );
+
+    console.log("Bước 7: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
     console.log("Đã tính toán khoảng cách và thời gian");
+    console.log(
+      "================================================================="
+    );
 
-    console.log(`Bước 5: Lấy đơn hàng gần nhất (trang ${page})...`);
+    console.log(`Bước 8: Lấy đơn hàng gần nhất (trang ${page})...`);
     const groupedOrders = await groupOrders(page);
     console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+    console.log(
+      "================================================================="
+    );
 
     console.log("Công cụ giao hàng hoàn tất.");
     console.log(`main thực thi trong ${Date.now() - startTime}ms`);
