@@ -20,7 +20,6 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static("public"));
 
-// Lưu trữ client để phát tín hiệu
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
   socket.on("disconnect", () => {
@@ -30,7 +29,6 @@ io.on("connection", (socket) => {
 
 let lastApiOrderCount = 0;
 
-// Cấu hình cơ sở dữ liệu và OpenAI
 const dbConfig = {
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
@@ -53,28 +51,6 @@ const DEFAULT_ADDRESS = {
 };
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
-
-// Kiểm tra biến môi trường
-if (!process.env.OPENAI_API_KEY) {
-  console.error("Lỗi: Thiếu OPENAI_API_KEY trong biến môi trường");
-  process.exit(1);
-}
-if (!process.env.TOMTOM_API_KEY) {
-  console.error("Lỗi: Thiếu TOMTOM_API_KEY trong biến môi trường");
-  process.exit(1);
-}
-if (!process.env.API_1_URL) {
-  console.error("Lỗi: Thiếu API_1_URL trong biến môi trường");
-  process.exit(1);
-}
-if (!process.env.API_2_BASE_URL) {
-  console.error("Lỗi: Thiếu API_2_BASE_URL trong biến môi trường");
-  process.exit(1);
-}
-if (!process.env.WAREHOUSE_ADDRESS) {
-  console.error("Lỗi: Thiếu WAREHOUSE_ADDRESS trong biến môi trường");
-  process.exit(1);
-}
 
 async function retry(fn, retries = 3, minTimeout = 2000, maxTimeout = 10000) {
   let attempt = 0;
@@ -405,7 +381,7 @@ async function fetchAndSaveOrders() {
             MaPX: order.MaPX,
             DcGiaohang: res.data.DcGiaohang || "",
             Tinhtranggiao: res.data.Tinhtranggiao || "",
-            SOKM: order.SOKM || null, // Lấy SOKM từ API 1
+            SOKM: order.SOKM || null,
             isEmpty: !res.data.DcGiaohang,
           }))
           .catch((err) => {
@@ -814,8 +790,6 @@ async function updatePriorityStatus(io) {
     console.log(
       `updatePriorityStatus thực thi trong ${Date.now() - startTime}ms`
     );
-
-    // Phát tín hiệu qua Socket.io nếu có bản ghi được cập nhật
     if (result.affectedRows > 0 && io) {
       io.emit("statusUpdated", {
         message: "Đã cập nhật trạng thái đơn hàng",
@@ -1004,7 +978,6 @@ async function groupOrders(page = 1, day = "today") {
       throw new Error("Page phải là số nguyên dương");
     }
 
-    // ✅ Điều kiện ngày theo tab
     let dateCondition = "";
     if (day === "today") {
       dateCondition = "DATE(oa.created_at) = CURDATE()";
@@ -1260,7 +1233,6 @@ async function updateOrderStatusToCompleted() {
       `Tổng số yêu cầu API_2 trong updateOrderStatusToCompleted: ${api2RequestCount}`
     );
 
-    // Lọc các đơn hàng có trạng thái "Hoàn thành"
     const completedOrders = results.filter(
       (order) => order.Tinhtranggiao === "Hoàn thành"
     );
@@ -1269,7 +1241,6 @@ async function updateOrderStatusToCompleted() {
     );
 
     if (completedOrders.length > 0) {
-      // Cập nhật trạng thái trong bảng orders
       const values = completedOrders.map((order) => ["Hoàn thành", order.MaPX]);
 
       const [updateResult] = await connection.query(
@@ -1338,31 +1309,25 @@ async function analyzeDeliveryNote() {
         .trim();
     };
 
-    // Hàm parse ghi chú bằng regex
     const parseDeliveryNote = (note, travelTime, order) => {
       const currentTime = moment().tz("Asia/Ho_Chi_Minh");
       const isSaturday = currentTime.day() === 6; // Thứ Bảy
       let deliveryDeadline = null;
       let priority = 0;
 
-      // Chuẩn hóa ghi chú
       const normalizedNote = normalizeNote(note);
 
-      // 1. Ưu tiên gấp
       const urgentRegex =
         /(gấp|ngay|nhanh|nhanh tí|nhanh lên|liền|ngay lập tức|sớm nhất|sớm tí|sớm nhé|len nhe|gấp lắm|khẩn cấp|urgent|hỏa tốc|nhanh nhất|mau lên|nhanh nha|sớm nhất có thể|sáng sớm)/i;
       if (urgentRegex.test(normalizedNote)) {
         deliveryDeadline = currentTime.clone().add(travelTime + 15, "minutes");
         priority = 2;
-      }
-      // 2. Thời gian cụ thể
-      else {
+      } else {
         const specificTimeRegex =
           /trước\s*(?:(\d{1,2}(?::\d{2})?(?:h|pm|am)?)|ăn trưa|ăn tối|(\d{1,2}h\d{2}))(?:\s*(sáng|chiều))?/i;
         const specificMatch = normalizedNote.match(specificTimeRegex);
         if (specificMatch) {
           if (specificMatch[1] || specificMatch[2]) {
-            // "trước 14h", "trc 14:30", "trước 14h30"
             let timeStr =
               specificMatch[1] || specificMatch[2].replace("h", ":");
             if (!timeStr.includes(":")) timeStr += ":00";
@@ -1399,9 +1364,7 @@ async function analyzeDeliveryNote() {
               .add(25, "minutes");
             priority = 1;
           }
-        }
-        // 3. Mơ hồ
-        else {
+        } else {
           const vagueRegex =
             /(đầu giờ chiều|chiều nay|hôm nay|sáng nay|trong sáng nay|trong chiều nay|sáng mai|ngày mai đầu giờ|ngày mai chiều|ngày mai tối|ngày mốt|ngày kia|tuần sau|thứ hai|sáng (\d+) ngày nữa|ngày mai|cuối giờ|đầu giờ)/i;
           const vagueMatch = normalizedNote.match(vagueRegex);
@@ -1512,7 +1475,6 @@ async function analyzeDeliveryNote() {
                   .add(8, "hours")
                   .add(travelTime + 15, "minutes");
                 if (currentTime.day() === 0) {
-                  // Nếu là Chủ Nhật
                   deliveryDeadline.add(1, "day");
                 }
                 priority = 1;
@@ -1528,7 +1490,6 @@ async function analyzeDeliveryNote() {
                 break;
               default:
                 if (vagueMatch[1]) {
-                  // "sáng x ngày nữa"
                   const days = parseInt(vagueMatch[1], 10);
                   deliveryDeadline = currentTime
                     .clone()
@@ -1543,18 +1504,14 @@ async function analyzeDeliveryNote() {
           }
         }
       }
-
-      // 4. Điều chỉnh giờ làm việc
       if (deliveryDeadline) {
-        const startOfDay = deliveryDeadline.clone().startOf("day"); // Dùng ngày của deliveryDeadline
+        const startOfDay = deliveryDeadline.clone().startOf("day");
         const workStart = startOfDay.clone().add(8, "hours");
         const workEnd = isSaturday
           ? startOfDay.clone().add(16, "hours").add(30, "minutes")
           : startOfDay.clone().add(17, "hours").add(40, "minutes");
         const lunchStart = startOfDay.clone().add(12, "hours");
         const lunchEnd = startOfDay.clone().add(13, "hours").add(30, "minutes");
-
-        // Kiểm tra và điều chỉnh nếu nằm trong giờ nghỉ trưa (12:00 - 13:30)
         let isDuringLunchBreak = false;
         if (
           deliveryDeadline.isSameOrAfter(lunchStart) &&
@@ -1564,21 +1521,18 @@ async function analyzeDeliveryNote() {
           isDuringLunchBreak = true;
         }
 
-        // Kiểm tra các giới hạn khác
         if (deliveryDeadline.isBefore(workStart)) {
           deliveryDeadline = workStart.clone().add(travelTime + 15, "minutes");
         } else if (deliveryDeadline.isAfter(workEnd)) {
           deliveryDeadline = workEnd;
         }
 
-        // Đảm bảo deadline hợp lệ
         if (deliveryDeadline.isBefore(currentTime)) {
           deliveryDeadline = currentTime
             .clone()
             .add(travelTime + 15, "minutes");
           priority = 2;
         } else if (isDuringLunchBreak) {
-          // Tính thời gian từ lúc bắt đầu làm việc (13:30) đến delivery_deadline
           const timeFromWorkStart = deliveryDeadline.diff(lunchEnd, "minutes");
           priority = timeFromWorkStart < 60 ? 2 : 1;
         }
@@ -1589,8 +1543,6 @@ async function analyzeDeliveryNote() {
           priority,
         };
       }
-
-      // 5. Không xác định
       return {
         id_order: order.id_order,
         delivery_deadline: null,
