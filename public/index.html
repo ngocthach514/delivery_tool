@@ -4,19 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Danh sách đơn hàng</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    />
+    <link
+      href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css"
+      rel="stylesheet"
+    />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
+
     <style>
       body {
         font-family: Arial, sans-serif;
         font-size: 13px;
         margin: 20px;
         background-color: #f4f4f4;
-      }
-      h1 {
-        text-align: center;
-        color: #333;
       }
       .container {
         max-width: 100%;
@@ -56,22 +63,6 @@
         background-color: #ffffff;
         color: #000000;
       }
-      .error {
-        color: red;
-        text-align: center;
-        margin-top: 20px;
-      }
-      .loading {
-        text-align: center;
-        margin-top: 20px;
-        font-style: italic;
-      }
-      .notification {
-        color: green;
-        text-align: center;
-        margin-top: 10px;
-        display: none;
-      }
       .pagination {
         position: fixed;
         bottom: 10px;
@@ -79,7 +70,7 @@
         transform: translateX(-50%);
         background-color: #fff;
         padding: 10px 20px;
-        box-shadow: 0 0 8px rgba(0,0,0,0.2);
+        box-shadow: 0 0 8px rgba(0, 0, 0, 0.2);
         border-radius: 8px;
         z-index: 1000;
       }
@@ -97,28 +88,57 @@
         background-color: #ccc;
         cursor: not-allowed;
       }
-      .pagination button:hover:not(:disabled) {
-        background-color: #45a049;
-      }
     </style>
   </head>
+
   <body>
     <div class="container">
-      <ul class="nav nav-tabs mb-3" id="orderTabs" role="tablist">
+      <ul class="nav nav-tabs mb-3" id="orderTabs">
         <li class="nav-item">
-          <button class="nav-link active" data-bs-toggle="tab" data-day="today" role="tab">Hôm nay</button>
+          <button class="nav-link active" data-bs-toggle="tab" data-day="today">
+            Hôm nay
+          </button>
         </li>
         <li class="nav-item">
-          <button class="nav-link" data-bs-toggle="tab" data-day="yesterday" role="tab">Hôm qua</button>
+          <button class="nav-link" data-bs-toggle="tab" data-day="yesterday">
+            Hôm qua
+          </button>
         </li>
         <li class="nav-item">
-          <button class="nav-link" data-bs-toggle="tab" data-day="older" role="tab">Trước nữa</button>
+          <button class="nav-link" data-bs-toggle="tab" data-day="older">
+            Trước nữa
+          </button>
         </li>
       </ul>
       <h1>Danh sách đơn hàng</h1>
-      <div id="notification" class="notification"></div>
-      <div id="loading" class="loading">Đang tải dữ liệu...</div>
-      <div id="error" class="error" style="display: none"></div>
+
+      <div class="d-flex justify-content-center mb-3">
+        <input
+          type="text"
+          id="searchInput"
+          class="form-control w-50"
+          placeholder="Tìm theo mã đơn hàng..."
+          oninput="debouncedSearch()"
+        />
+      </div>
+
+      <div class="d-flex justify-content-center mb-4 gap-3">
+        <select id="districtSelect" class="form-select w-25" multiple></select>
+        <select id="wardSelect" class="form-select w-25" multiple></select>
+      </div>
+
+      <div
+        id="notification"
+        class="text-success text-center mb-2"
+        style="display: none"
+      ></div>
+      <div id="loading" class="text-center mb-2">Đang tải dữ liệu...</div>
+      <div
+        id="error"
+        class="text-danger text-center mb-2"
+        style="display: none"
+      ></div>
+
       <div id="orders-wrapper"></div>
       <div class="pagination" id="pagination"></div>
     </div>
@@ -128,162 +148,275 @@
       let currentDay = "today";
       let currentPage = 1;
       let totalPages = 1;
+      let allOrders = [];
+      let locationLoaded = false;
+      let districtWardMap = {};
+
+      fetchOrders(currentDay, 1);
 
       const socket = io();
-
-      socket.on("connect", () => {
-        console.log("Connected to Socket.io server");
+      socket.on("connect", () => console.log("Connected"));
+      socket.on("statusUpdated", (data) => {
+        $("#notification")
+          .text(`${data.message} (${data.updatedCount} đơn hàng)`)
+          .fadeIn();
+        setTimeout(() => $("#notification").fadeOut(), 3000);
+        fetchOrders(currentDay, currentPage);
       });
 
-      socket.on("statusUpdated", (data) => {
-        document.getElementById("notification").textContent = `${data.message} (${data.updatedCount} đơn hàng)`;
-        document.getElementById("notification").style.display = "block";
-        setTimeout(() => {
-          document.getElementById("notification").style.display = "none";
-        }, 3000);
-        fetchOrders(currentDay, currentPage);
+      document.querySelectorAll("#orderTabs .nav-link").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          document
+            .querySelectorAll("#orderTabs .nav-link")
+            .forEach((t) => t.classList.remove("active"));
+          tab.classList.add("active");
+          currentDay = tab.getAttribute("data-day");
+          fetchOrders(currentDay, 1);
+        });
       });
 
       async function fetchOrders(day = "today", page = 1) {
         try {
-          document.getElementById("loading").style.display = "block";
-          document.getElementById("error").style.display = "none";
+          $("#loading").show();
+          $("#error").hide();
 
-          const response = await fetch(`${apiUrl}?day=${day}&page=${page}`);
-          if (!response.ok) {
-            throw new Error("Lỗi khi lấy dữ liệu từ API");
-          }
-          const data = await response.json();
+          const res = await fetch(`${apiUrl}?day=${day}&page=${page}`);
+          if (!res.ok) throw new Error("Không thể lấy dữ liệu từ API.");
+          const data = await res.json();
+
           totalPages = data.totalPages || 1;
           currentPage = data.currentPage || 1;
+          allOrders = data.orders;
           renderOrders(data.orders);
           renderPagination();
-        } catch (error) {
-          document.getElementById("error").textContent = `Lỗi: ${error.message}`;
-          document.getElementById("error").style.display = "block";
+
+          if (!locationLoaded) {
+            const locationRes = await fetch("/locations");
+            if (!locationRes.ok)
+              throw new Error("Không lấy được danh sách quận/phường.");
+            const locationData = await locationRes.json();
+            initSelectFilters(locationData);
+            locationLoaded = true;
+          }
+        } catch (err) {
+          $("#error")
+            .text("Lỗi: " + err.message)
+            .show();
         } finally {
-          document.getElementById("loading").style.display = "none";
+          $("#loading").hide();
         }
       }
 
-      function renderPagination() {
-        const container = document.getElementById("pagination");
-        container.innerHTML = "";
+      function initSelectFilters(data) {
+        const districtSelect = $("#districtSelect");
+        const wardSelect = $("#wardSelect");
 
-        const prev = document.createElement("button");
-        prev.textContent = "Trang trước";
-        prev.disabled = currentPage === 1;
-        prev.onclick = () => fetchOrders(currentDay, currentPage - 1);
+        // 1. Lưu map Quận -> Phường
+        districtWardMap = {};
+        data.mapping?.forEach((entry) => {
+          const { district, ward } = entry;
+          if (district && ward) {
+            if (!districtWardMap[district]) districtWardMap[district] = [];
+            if (!districtWardMap[district].includes(ward)) {
+              districtWardMap[district].push(ward);
+            }
+          }
+        });
 
-        const next = document.createElement("button");
-        next.textContent = "Trang sau";
-        next.disabled = currentPage === totalPages;
-        next.onclick = () => fetchOrders(currentDay, currentPage + 1);
+        // 2. Fill Quận
+        const uniqueDistricts = [
+          ...new Set(data.mapping.map((d) => d.district)),
+        ];
+        districtSelect.html(
+          uniqueDistricts.map((d) => `<option value="${d}">${d}</option>`)
+        );
 
-        const info = document.createElement("span");
-        info.textContent = ` Trang ${currentPage} / ${totalPages} `;
+        // 3. Fill toàn bộ Phường ban đầu
+        const allWards = [...new Set(data.mapping.map((d) => d.ward))];
+        wardSelect.html(
+          allWards.map((w) => `<option value="${w}">${w}</option>`)
+        );
 
-        container.appendChild(prev);
-        container.appendChild(info);
-        container.appendChild(next);
-      }
+        // 4. Active Select2
+        districtSelect.select2({
+          placeholder: "Chọn Quận/Huyện",
+          multiple: true,
+        });
+        wardSelect.select2({ placeholder: "Chọn Phường/Xã", multiple: true });
 
-      function formatDateTime(dateString) {
-        if (!dateString) return "Không Có";
-        const date = new Date(dateString);
-        if (isNaN(date.getTime())) return "Không Có";
-        const d = String(date.getDate()).padStart(2, "0");
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const y = date.getFullYear();
-        const h = String(date.getHours()).padStart(2, "0");
-        const min = String(date.getMinutes()).padStart(2, "0");
-        const s = String(date.getSeconds()).padStart(2, "0");
-        return `${d}/${m}/${y} ${h}:${min}:${s}`;
+        // 5. Khi chọn Quận thì lọc Phường
+        districtSelect.on("change", () => {
+          const selectedDistricts = districtSelect.val();
+
+          if (selectedDistricts.length === 0) {
+            // Nếu không chọn quận nào, thì hiện toàn bộ phường
+            const allWards = [...new Set(data.mapping.map((d) => d.ward))];
+            wardSelect.html(
+              allWards.map((w) => `<option value="${w}">${w}</option>`)
+            );
+          } else {
+            // Chỉ hiện các phường thuộc quận đã chọn
+            const filteredWards = selectedDistricts.flatMap(
+              (d) => districtWardMap[d] || []
+            );
+            const uniqueWards = [...new Set(filteredWards)];
+            wardSelect.html(
+              uniqueWards.map((w) => `<option value="${w}">${w}</option>`)
+            );
+          }
+
+          wardSelect.trigger("change");
+          applyFilters(); // Gọi lại lọc
+        });
+
+        wardSelect.on("change", applyFilters);
       }
 
       function renderOrders(orders) {
         const wrapper = document.getElementById("orders-wrapper");
         wrapper.innerHTML = "";
         const now = new Date();
-
         const table = document.createElement("table");
         table.className = "table table-bordered";
         table.innerHTML = `
-          <thead>
-            <tr>
-              <th>Mã đơn hàng</th>
-              <th>Địa chỉ giao hàng</th>
-              <th>Khoảng cách quy định (km)</th>
-              <th>Khoảng cách sau tính (km)</th>
-              <th>Thời gian di chuyển (phút)</th>
-              <th>Độ Ưu tiên</th>
-              <th>Thời gian tạo</th>
-              <th>Thời gian giao khách yêu cầu</th>
-              <th>Khách Note</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        `;
-
+        <thead>
+          <tr>
+            <th>Mã đơn</th><th>Địa chỉ</th><th>Khoảng cách quy định</th>
+            <th>Khoảng cách thực</th><th>Thời gian di chuyển</th>
+            <th>Ưu tiên</th><th>Thời gian tạo</th><th>Giao theo yêu cầu</th><th>Ghi chú</th>
+          </tr>
+        </thead><tbody></tbody>`;
         const tbody = table.querySelector("tbody");
 
-        orders.forEach((order) => {
-          const createdAt = new Date(order.created_at);
-          const deadline = new Date(order.delivery_deadline);
+        orders.forEach((o) => {
+          const deadline = new Date(o.delivery_deadline);
           const timeToDeadline = (deadline - now) / (1000 * 60);
-
-          let priorityText = "Bình thường";
-          let priorityClass = "priority-normal";
-
-          if (order.priority === 2) {
-            priorityText = "Khẩn cấp";
-            priorityClass = "priority-urgent";
-          } else if (order.priority === 1) {
-            priorityText = "Ưu tiên cao";
-            priorityClass = "priority-high";
-          }
-
-          const cells = [
-            order.id_order,
-            order.address,
-            order.SOKM !== null ? order.SOKM : "N/A",
-            order.distance !== null ? order.distance.toFixed(2) : "N/A",
-            order.travel_time,
-            priorityText,
-            formatDateTime(order.created_at),
-            formatDateTime(order.delivery_deadline),
-            order.delivery_note
+          let [priorityText, priorityClass] = [
+            "Bình thường",
+            "priority-normal",
           ];
+          if (o.priority === 2)
+            [priorityText, priorityClass] = ["Khẩn cấp", "priority-urgent"];
+          else if (o.priority === 1)
+            [priorityText, priorityClass] = ["Ưu tiên cao", "priority-high"];
 
           const row = document.createElement("tr");
-          if (order.status === 1 && timeToDeadline <= 120) {
+          if (o.status === 1 && timeToDeadline <= 120)
             row.style.borderLeft = "6px solid red";
-          }
-
-          cells.forEach((text) => {
+          [
+            o.id_order,
+            o.address,
+            o.SOKM ?? "N/A",
+            o.distance !== null ? o.distance.toFixed(2) : "N/A",
+            o.travel_time,
+            priorityText,
+            formatDateTime(o.created_at),
+            formatDateTime(o.delivery_deadline),
+            o.delivery_note,
+          ].forEach((txt) => {
             const td = document.createElement("td");
-            td.textContent = text;
-            td.classList.add(priorityClass);
+            td.textContent = txt;
+            td.className = priorityClass;
             row.appendChild(td);
           });
-
           tbody.appendChild(row);
         });
-
         wrapper.appendChild(table);
       }
 
-      document.querySelectorAll('#orderTabs .nav-link').forEach(tab => {
-        tab.addEventListener('click', () => {
-          document.querySelectorAll('#orderTabs .nav-link').forEach(t => t.classList.remove('active'));
-          tab.classList.add('active');
-          const day = tab.getAttribute('data-day');
-          currentDay = day;
-          fetchOrders(day);
-        });
-      });
+      function formatDateTime(dateStr) {
+        if (!dateStr) return "Không có";
+        const d = new Date(dateStr);
+        return isNaN(d.getTime()) ? "Không có" : d.toLocaleString("vi-VN");
+      }
 
-      fetchOrders(currentDay);
+      function renderPagination() {
+        const container = document.getElementById("pagination");
+        container.innerHTML = "";
+        const prev = document.createElement("button");
+        prev.textContent = "Trang trước";
+        prev.disabled = currentPage === 1;
+        prev.onclick = () => fetchOrders(currentDay, currentPage - 1);
+        const next = document.createElement("button");
+        next.textContent = "Trang sau";
+        next.disabled = currentPage === totalPages;
+        next.onclick = () => fetchOrders(currentDay, currentPage + 1);
+        const info = document.createElement("span");
+        info.textContent = ` Trang ${currentPage} / ${totalPages} `;
+        container.appendChild(prev);
+        container.appendChild(info);
+        container.appendChild(next);
+      }
+
+      let searchTimeout;
+      function debouncedSearch() {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(searchOrder, 300);
+      }
+
+      async function searchOrder() {
+        const keyword = $("#searchInput").val().trim().toLowerCase();
+
+        if (!keyword) {
+          applyFilters(); // fallback về lọc select
+          return;
+        }
+
+        try {
+          const res = await fetch(`${apiUrl}?day=${currentDay}&all=true`);
+          const data = await res.json();
+          const filtered = (data.orders || []).filter((o) =>
+            o.id_order.toLowerCase().includes(keyword)
+          );
+
+          renderOrders(filtered);
+          $("#pagination").hide();
+        } catch (err) {
+          console.error("Lỗi tìm mã đơn hàng:", err.message);
+          $("#error").text("Không tìm được đơn hàng theo mã.").show();
+        }
+      }
+
+      async function applyFilters() {
+        const selectedDistricts = $("#districtSelect").val();
+        const selectedWards = $("#wardSelect").val();
+
+        const hasDistricts = selectedDistricts && selectedDistricts.length > 0;
+        const hasWards = selectedWards && selectedWards.length > 0;
+
+        if (!hasDistricts && !hasWards) {
+          $("#pagination").show();
+          fetchOrders(currentDay, currentPage);
+          return;
+        }
+
+        try {
+          const query = new URLSearchParams({
+            day: currentDay,
+          });
+
+          if (hasDistricts) {
+            query.append("districts", selectedDistricts.join(","));
+          }
+
+          if (hasWards) {
+            query.append("wards", selectedWards.join(","));
+          }
+
+          const res = await fetch(
+            `/orders/filter-advanced?${query.toString()}`
+          );
+          const data = await res.json();
+
+          renderOrders(data.orders || []);
+          $("#pagination").hide();
+        } catch (err) {
+          console.error("Lỗi khi lọc đơn hàng nâng cao:", err.message);
+          $("#error").text("Không thể lọc đơn hàng.").show();
+        }
+      }
+
+      fetchOrders(currentDay, 1);
     </script>
   </body>
 </html>

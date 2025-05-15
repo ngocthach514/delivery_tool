@@ -1027,6 +1027,8 @@ async function groupOrders(page = 1, day = "today") {
         oa.travel_time,
         oa.status,
         oa.created_at,
+        oa.district,
+        oa.ward,
         o.SOKM,
         o.priority,
         o.delivery_deadline,
@@ -1085,6 +1087,8 @@ async function groupOrders(page = 1, day = "today") {
         ? moment(row.delivery_deadline).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
         : null,
       delivery_note: row.delivery_note,
+      district: row.district || null,
+      ward: row.ward || null
     }));
 
     await connection.end();
@@ -1627,6 +1631,163 @@ app.get("/process-orders", async (req, res) => {
   } catch (error) {
     console.error("Lỗi trong /process-orders:", error.message, error.stack);
     res.status(500).json({ error: "Lỗi server", details: error.message });
+  }
+});
+
+app.get("/locations", async (req, res) => {
+  const connection = await mysql.createConnection(dbConfig);
+  const [rows] = await connection.query(`
+    SELECT DISTINCT district, ward
+    FROM orders_address
+    WHERE district IS NOT NULL AND ward IS NOT NULL
+  `);
+
+  const districts = [...new Set(rows.map(r => r.district.trim()))];
+  const wards = [...new Set(rows.map(r => r.ward.trim()))];
+
+  res.json({
+    districts,
+    wards,
+    mapping: rows.map(r => ({
+      district: r.district.trim(),
+      ward: r.ward.trim(),
+    })),
+  });
+});
+
+app.get("/orders/search", async (req, res) => {
+  const { day = "today", keyword = "", type = "district" } = req.query;
+
+  if (!keyword.trim()) {
+    return res.status(400).json({ error: "Thiếu giá trị để tìm kiếm." });
+  }
+
+  if (!["district", "ward"].includes(type)) {
+    return res.status(400).json({ error: "Tham số type không hợp lệ." });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    let dateCondition = "DATE(o.created_at) = CURDATE()";
+    if (day === "yesterday") {
+      dateCondition = "DATE(o.created_at) = CURDATE() - INTERVAL 1 DAY";
+    } else if (day === "older") {
+      dateCondition = "DATE(o.created_at) < CURDATE() - INTERVAL 1 DAY";
+    }
+
+    const field = type === "district" ? "a.district" : "a.ward";
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE ${dateCondition}
+        AND ${field} = ?
+      ORDER BY o.created_at DESC
+      `,
+      [keyword]
+    );
+
+    await connection.end();
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi khi tìm kiếm:", err.message);
+    res.status(500).json({ error: "Lỗi server khi tìm kiếm đơn hàng." });
+  }
+});
+
+app.get("/orders/filter", async (req, res) => {
+  const { day = "today", district = "", ward = "" } = req.query;
+
+  if (!district || !ward) {
+    return res.status(400).json({ error: "Thiếu quận hoặc phường." });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    let dateCondition = "DATE(o.created_at) = CURDATE()";
+    if (day === "yesterday") {
+      dateCondition = "DATE(o.created_at) = CURDATE() - INTERVAL 1 DAY";
+    } else if (day === "older") {
+      dateCondition = "DATE(o.created_at) < CURDATE() - INTERVAL 1 DAY";
+    }
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE ${dateCondition}
+        AND a.district = ?
+        AND a.ward = ?
+      ORDER BY o.created_at DESC
+      `,
+      [district, ward]
+    );
+
+    await connection.end();
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi khi lọc:", err.message);
+    res.status(500).json({ error: "Lỗi server khi lọc đơn hàng." });
+  }
+});
+
+app.get("/orders/filter-advanced", async (req, res) => {
+  const { day = "today", districts = "", wards = "" } = req.query;
+
+  const districtList = districts ? districts.split(",").map(d => d.trim()) : [];
+  const wardList = wards ? wards.split(",").map(w => w.trim()) : [];
+
+  if (districtList.length === 0 && wardList.length === 0) {
+    return res.status(400).json({ error: "Thiếu quận hoặc phường để lọc." });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    let dateCondition = "DATE(o.created_at) = CURDATE()";
+    if (day === "yesterday") {
+      dateCondition = "DATE(o.created_at) = CURDATE() - INTERVAL 1 DAY";
+    } else if (day === "older") {
+      dateCondition = "DATE(o.created_at) < CURDATE() - INTERVAL 1 DAY";
+    }
+
+    const filters = [dateCondition];
+    const values = [];
+
+    if (districtList.length > 0) {
+      filters.push(`a.district IN (${districtList.map(() => "?").join(",")})`);
+      values.push(...districtList);
+    }
+
+    if (wardList.length > 0) {
+      filters.push(`a.ward IN (${wardList.map(() => "?").join(",")})`);
+      values.push(...wardList);
+    }
+
+    const whereClause = filters.join(" AND ");
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE ${whereClause}
+      ORDER BY o.created_at DESC
+      `,
+      values
+    );
+
+    await connection.end();
+
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi /orders/filter-advanced:", err.message, err.stack);
+    res.status(500).json({ error: "Lỗi server khi lọc nâng cao." });
   }
 });
 
