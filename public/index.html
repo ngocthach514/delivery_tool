@@ -88,6 +88,37 @@
         background-color: #ccc;
         cursor: not-allowed;
       }
+      /* Kiểu cho container danh sách thông báo */
+      .notification-container {
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        max-width: 300px;
+        z-index: 2000;
+        display: none;
+      }
+      .notification-blink {
+        background-color: #ff0000;
+        color: white;
+        font-weight: bold;
+        padding: 10px 15px;
+        margin-bottom: 10px;
+        border-radius: 5px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        animation: blink 1s infinite;
+        list-style: none;
+      }
+      @keyframes blink {
+        0% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+        100% {
+          opacity: 1;
+        }
+      }
     </style>
   </head>
 
@@ -127,11 +158,9 @@
         <select id="wardSelect" class="form-select w-25" multiple></select>
       </div>
 
-      <div
-        id="notification"
-        class="text-success text-center mb-2"
-        style="display: none"
-      ></div>
+      <div id="notification-container" class="notification-container">
+        <ul id="notification-list"></ul>
+      </div>
       <div id="loading" class="text-center mb-2">Đang tải dữ liệu...</div>
       <div
         id="error"
@@ -157,10 +186,16 @@
       const socket = io();
       socket.on("connect", () => console.log("Connected"));
       socket.on("statusUpdated", (data) => {
-        $("#notification")
-          .text(`${data.message} (${data.updatedCount} đơn hàng)`)
-          .fadeIn();
-        setTimeout(() => $("#notification").fadeOut(), 3000);
+        $("#notification-list").append(
+          `<li class="text-success">${data.message} (${data.updatedCount} đơn hàng)</li>`
+        );
+        $("#notification-container").fadeIn();
+        setTimeout(() => {
+          $("#notification-list .text-success").remove();
+          if ($("#notification-list").children().length === 0) {
+            $("#notification-container").fadeOut();
+          }
+        }, 3000);
         fetchOrders(currentDay, currentPage);
       });
 
@@ -211,7 +246,6 @@
         const districtSelect = $("#districtSelect");
         const wardSelect = $("#wardSelect");
 
-        // 1. Lưu map Quận -> Phường
         districtWardMap = {};
         data.mapping?.forEach((entry) => {
           const { district, ward } = entry;
@@ -223,7 +257,6 @@
           }
         });
 
-        // 2. Fill Quận
         const uniqueDistricts = [
           ...new Set(data.mapping.map((d) => d.district)),
         ];
@@ -231,31 +264,26 @@
           uniqueDistricts.map((d) => `<option value="${d}">${d}</option>`)
         );
 
-        // 3. Fill toàn bộ Phường ban đầu
         const allWards = [...new Set(data.mapping.map((d) => d.ward))];
         wardSelect.html(
           allWards.map((w) => `<option value="${w}">${w}</option>`)
         );
 
-        // 4. Active Select2
         districtSelect.select2({
           placeholder: "Chọn Quận/Huyện",
           multiple: true,
         });
         wardSelect.select2({ placeholder: "Chọn Phường/Xã", multiple: true });
 
-        // 5. Khi chọn Quận thì lọc Phường
         districtSelect.on("change", () => {
           const selectedDistricts = districtSelect.val();
 
           if (selectedDistricts.length === 0) {
-            // Nếu không chọn quận nào, thì hiện toàn bộ phường
             const allWards = [...new Set(data.mapping.map((d) => d.ward))];
             wardSelect.html(
               allWards.map((w) => `<option value="${w}">${w}</option>`)
             );
           } else {
-            // Chỉ hiện các phường thuộc quận đã chọn
             const filteredWards = selectedDistricts.flatMap(
               (d) => districtWardMap[d] || []
             );
@@ -266,7 +294,7 @@
           }
 
           wardSelect.trigger("change");
-          applyFilters(); // Gọi lại lọc
+          applyFilters();
         });
 
         wardSelect.on("change", applyFilters);
@@ -288,6 +316,29 @@
         </thead><tbody></tbody>`;
         const tbody = table.querySelector("tbody");
 
+        // Tạo danh sách thông báo cho đơn hàng quá hạn
+        const notificationList = $("#notification-list");
+        notificationList.empty(); // Xóa danh sách cũ
+
+        const overdueOrders = orders.filter((o) => {
+          const createdAt = new Date(o.address_created_at || o.created_at);
+          const timeSinceCreated = (now - createdAt) / (1000 * 60); // Thời gian tính bằng phút
+          return timeSinceCreated > 15; // Quá 15 phút
+        });
+
+        if (overdueOrders.length > 0) {
+          overdueOrders.forEach((o) => {
+            notificationList.append(
+              `<li class="notification-blink">CẢNH BÁO: Đơn hàng ${o.id_order} đã quá 15 phút!</li>`
+            );
+          });
+          $("#notification-container").fadeIn();
+          setTimeout(() => {
+            notificationList.empty();
+            $("#notification-container").fadeOut();
+          }, 30000); // Ẩn sau 30 giây
+        }
+
         orders.forEach((o) => {
           const deadline = new Date(o.delivery_deadline);
           const timeToDeadline = (deadline - now) / (1000 * 60);
@@ -303,6 +354,7 @@
           const row = document.createElement("tr");
           if (o.status === 1 && timeToDeadline <= 120)
             row.style.borderLeft = "6px solid red";
+
           [
             o.id_order,
             o.address,
@@ -358,7 +410,7 @@
         const keyword = $("#searchInput").val().trim().toLowerCase();
 
         if (!keyword) {
-          applyFilters(); // fallback về lọc select
+          applyFilters();
           return;
         }
 
