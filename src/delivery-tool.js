@@ -166,8 +166,8 @@ async function checkRouteCache(originAddress, destinationAddress) {
       FROM route_cache
       WHERE origin_address = ? 
         AND destination_address = ?
-        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 4 HOUR)
-        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 4 HOUR)
+        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 24 HOUR)
       ORDER BY calculated_at DESC
       LIMIT 1
       `,
@@ -540,6 +540,20 @@ async function standardizeAddresses(orders) {
           };
         }
 
+        if (isTransportAddress(cleanedAddress)) {
+          const transportResult = await findTransportCompany(cleanedAddress);
+          if (transportResult) {
+            return {
+              MaPX,
+              DcGiaohang: transportResult.DcGiaohang,
+              District: transportResult.District,
+              Ward: transportResult.Ward,
+              Source: "TransportDB",
+              isEmpty: false,
+            };
+          }
+        }
+
         const prompt = `
         Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
 
@@ -609,7 +623,7 @@ async function standardizeAddresses(orders) {
 
         try {
           const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: "gpt-4o-mini-2024-07-18",
             messages: [{ role: "system", content: prompt }],
           });
 
@@ -1665,12 +1679,12 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    // console.log("Bước 3: Lấy và lưu đơn hàng...");
-    // const orders = await fetchAndSaveOrders();
-    // console.log("Đã lưu đơn hàng:", orders.length);
-    // console.log(
-    //   "================================================================="
-    // );
+    console.log("Bước 3: Lấy và lưu đơn hàng...");
+    const orders = await fetchAndSaveOrders();
+    console.log("Đã lưu đơn hàng:", orders.length);
+    console.log(
+      "================================================================="
+    );
 
     console.log("Bước 4: Phân tích ghi chú đơn hàng...");
     await analyzeDeliveryNote();
@@ -1679,28 +1693,28 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    // if (orders.length === 0) {
-    //   console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
-    //   const groupedOrders = await groupOrders(page);
-    //   console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
-    //   console.log("Công cụ giao hàng hoàn tất.");
-    //   console.log(`main thực thi trong ${Date.now() - startTime}ms`);
-    //   return groupedOrders;
-    // }
+    if (orders.length === 0) {
+      console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
+      const groupedOrders = await groupOrders(page);
+      console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+      console.log("Công cụ giao hàng hoàn tất.");
+      console.log(`main thực thi trong ${Date.now() - startTime}ms`);
+      return groupedOrders;
+    }
 
-    // console.log("Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
-    // const standardizedOrders = await standardizeAddresses(orders);
-    // console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
-    // console.log(
-    //   "================================================================="
-    // );
+    console.log("Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
+    const standardizedOrders = await standardizeAddresses(orders);
+    console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
+    console.log(
+      "================================================================="
+    );
 
-    // console.log("Bước 6: Cập nhật địa chỉ chuẩn hóa...");
-    // await updateStandardizedAddresses(standardizedOrders);
-    // console.log("Đã cập nhật địa chỉ chuẩn hóa");
-    // console.log(
-    //   "================================================================="
-    // );
+    console.log("Bước 6: Cập nhật địa chỉ chuẩn hóa...");
+    await updateStandardizedAddresses(standardizedOrders);
+    console.log("Đã cập nhật địa chỉ chuẩn hóa");
+    console.log(
+      "================================================================="
+    );
 
     console.log("Bước 7: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
