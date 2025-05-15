@@ -1275,11 +1275,218 @@ async function updateOrderStatusToCompleted() {
   }
 }
 
+// async function analyzeDeliveryNote() {
+//   const startTime = Date.now();
+//   try {
+//     const connection = await mysql.createConnection(dbConfig);
+
+//     const [orders] = await connection.query(
+//       `
+//       SELECT o.id_order, o.delivery_note, oa.travel_time
+//       FROM orders o
+//       LEFT JOIN orders_address oa ON o.id_order = oa.id_order
+//       WHERE o.delivery_note IS NOT NULL
+//         AND o.status = 'Chờ xác nhận giao/lấy hàng'
+//         AND priority = 0
+//         AND delivery_deadline IS NULL
+//       `
+//     );
+//     console.log(`Số lượng đơn hàng có ghi chú: ${orders.length}`);
+
+//     if (orders.length === 0) {
+//       await connection.end();
+//       console.log(
+//         `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
+//       );
+//       return;
+//     }
+
+//     const priorityOrders = [];
+//     const limit = pLimit(5);
+
+//     const aiPromises = orders.map((order) =>
+//       limit(async () => {
+//         const input = {
+//           id_order: order.id_order,
+//           Ghichu: order.delivery_note,
+//           travel_time: order.travel_time,
+//         };
+//         console.log(input);
+
+//         const currentTime = moment()
+//           .tz("Asia/Ho_Chi_Minh")
+//           .format("YYYY-MM-DD HH:mm:ss");
+//         const promptWithTime = `
+// Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhiệm vụ của bạn là:
+
+// - Nhận một đơn hàng làm đầu vào, với các trường: \`id_order\`, \`Ghichu\`, và \`travel_time\` (số phút ước tính để giao đến nơi).
+// - Phân tích \`Ghichu\` để xác định:
+//   - \`delivery_deadline\`: Thời điểm giao hàng mong muốn (định dạng \`YYYY-MM-DD HH:mm:ss\`, múi giờ hệ thống, hoặc \`null\` nếu không xác định được).
+//   - \`priority\`: Mức độ ưu tiên giao hàng (2: gấp, 1: ưu tiên, 0: bình thường).
+// **travel_time là: ${input.travel_time} phút** 
+// **Thời gian hiện tại là: ${currentTime}**.
+
+// **Thời gian làm việc:**
+// - Bắt đầu: 08:10
+// - Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:40**)
+// - Nghỉ trưa: 12:00 – 13:30
+
+// ### QUY TẮC XỬ LÝ:
+
+// 1. **Ưu tiên gấp (priority = 2)**:
+//    - Nếu \`Ghichu\` chứa từ: "gấp", "ngay", "nhanh", "nhanh tí", "liền", "ngay lập tức", "som nhat", "len nhe", "gap", "sn", "nhah" →
+//      - \`delivery_deadline\` = thời gian hiện tại + travel_time + 15 phút
+//      - Nếu > 17:40:00 → giới hạn thành 17:40:00
+//      - Nếu < 08:00:00 → giới hạn thành 08:00:00 + travel_time + 15 phút
+//      - Nếu > 12:00:00 và < 13:30:00 → giới hạn thành 13:30:00 + travel_time + 15 phút
+//      - \`priority\` = 2
+
+// 2. **Thời gian cụ thể (priority = 1 hoặc 2)**:
+//    - Nếu \`Ghichu\` chứa "giao trước" + giờ (vd: "trước 16h", "trc 14:30", "trước ăn trưa") →
+//      - Trừ 15 phút (5 phút buffer + 10 phút chuẩn bị)
+//      - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
+//      - Nếu là "trước ăn tối": 17:40:00 - 5 phút (buffer) - 10 phút = 17:25:00
+//      - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
+//      - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
+//      - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
+
+// 3. **Mơ hồ (priority = 1 hoặc 2)**:
+//    - "đầu giờ chiều" → 13:30:00 → \`priority\` = 1
+//    - "chiều nay", "hôm nay" → trước 17:40 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
+//    - "sáng mai", "ngày mai đầu giờ" → 08:00:00 ngày mai → \`priority\` = 1
+//    - "ngày mai chiều", "ngày mai tối" → 13:30:00 ngày mai → \`priority\` = 1
+//    - "ngày mốt", "ngày mốt chiều" → 08:00:00 hoặc 13:30:00 ngày mốt → \`priority\` = 1
+//    - "tuần sau", "tuần sau trước 10h" → 08:00:00 hoặc 09:50:00 thứ Hai tuần sau → \`priority\` = 1
+
+// 4. **Không xác định (priority = 0)**:
+//    - Ví dụ: "giao lúc nào cũng được" → \`delivery_deadline\` = null, \`priority\` = 0
+
+// 5. **Lỗi chính tả & ngôn ngữ tự nhiên**:
+//    - "trc" = "trước", "gap" = "gấp", "sn" = "sớm", "nhah" = "nhanh"
+//    - Hiểu các câu như: "giao nhanh tí đi nha", "trước ăn tối nha bạn"...
+
+// **Đầu ra dạng JSON như sau:**
+// \`\`\`json
+// {
+//   "id_order": "...",
+//   "delivery_deadline": "YYYY-MM-DD HH:mm:ss",
+//   "priority": 2|1|0
+// }
+// \`\`\`
+// `;
+
+//         try {
+//           const response = await axios.post(process.env.LOCALAI_API_URL, {
+//             model: "qwen3:8B",
+//             temperature: 0,
+//             messages: [
+//               {
+//                 role: "user",
+//                 content: promptWithTime,
+//               },
+//               {
+//                 role: "user",
+//                 content: JSON.stringify(input),
+//               },
+//             ],
+//           });
+
+//           const result = JSON.parse(response.data.message.content);
+//           console.log(`Kết quả AI cho id_order ${order.id_order}:`, result);
+
+//           let deliveryDeadline = null;
+//           if (result.delivery_deadline) {
+//             try {
+//               const date = new Date(result.delivery_deadline);
+//               if (!isNaN(date.getTime())) {
+//                 deliveryDeadline = result.delivery_deadline;
+//                 console.log(
+//                   `Thời gian hợp lệ cho id_order ${order.id_order}: ${deliveryDeadline}`
+//                 );
+//               } else {
+//                 console.warn(
+//                   `Thời gian không hợp lệ cho id_order ${order.id_order}: ${result.delivery_deadline}`
+//                 );
+//               }
+//             } catch (error) {
+//               console.warn(
+//                 `Lỗi khi phân tích thời gian cho id_order ${order.id_order}:`,
+//                 error.message
+//               );
+//             }
+//           }
+
+//           let priority = parseInt(result.priority, 10);
+//           if (isNaN(priority) || priority < 0 || priority > 2) {
+//             console.warn(
+//               `Priority không hợp lệ cho id_order ${order.id_order}: ${result.priority}, gán mặc định priority = 0`
+//             );
+//             priority = 0;
+//           }
+
+//           console.log(
+//             `Chuẩn bị cập nhật id_order ${order.id_order}: priority=${priority}, delivery_deadline=${deliveryDeadline}`
+//           );
+
+//           if (priority > 0 || deliveryDeadline) {
+//             priorityOrders.push([priority, deliveryDeadline, result.id_order]);
+//           }
+
+//           return result;
+//         } catch (error) {
+//           console.error(
+//             `Lỗi khi gọi AI local cho id_order ${order.id_order}:`,
+//             error.message
+//           );
+//           return null;
+//         }
+//       })
+//     );
+
+//     const results = await Promise.all(aiPromises);
+//     console.log(`Số lượng kết quả từ AI: ${results.length}`);
+
+//     const validResults = results.filter((result) => result !== null);
+//     console.log(`Số lượng kết quả hợp lệ: ${validResults.length}`);
+
+//     if (priorityOrders.length > 0) {
+//       for (const [priority, deliveryDeadline, idOrder] of priorityOrders) {
+//         try {
+//           const [updateResult] = await connection.query(
+//             `
+//         UPDATE orders
+//         SET priority = ?, delivery_deadline = ?
+//         WHERE id_order = ?
+//         `,
+//             [priority, deliveryDeadline, idOrder]
+//           );
+//           console.log(
+//             `Cập nhật thành công id_order ${idOrder}: priority=${priority}, delivery_deadline=${deliveryDeadline}, affectedRows=${updateResult.affectedRows}`
+//           );
+//         } catch (error) {
+//           console.error(`Lỗi khi cập nhật id_order ${idOrder}:`, error.message);
+//         }
+//       }
+//     } else {
+//       console.log(
+//         "Không có đơn hàng nào để cập nhật priority/delivery_deadline"
+//       );
+//     }
+
+//     await connection.end();
+//     console.log(
+//       `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
+//     );
+//   } catch (error) {
+//     console.error("Lỗi trong analyzeDeliveryNote:", error.message);
+//     throw error;
+//   }
+// }
+
 async function analyzeDeliveryNote() {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
-
     const [orders] = await connection.query(
       `
       SELECT o.id_order, o.delivery_note, oa.travel_time
@@ -1295,188 +1502,227 @@ async function analyzeDeliveryNote() {
 
     if (orders.length === 0) {
       await connection.end();
-      console.log(
-        `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
-      );
+      console.log(`analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`);
       return;
     }
 
     const priorityOrders = [];
     const limit = pLimit(5);
 
-    const aiPromises = orders.map((order) =>
-      limit(async () => {
-        const input = {
-          id_order: order.id_order,
-          Ghichu: order.delivery_note,
-          travel_time: order.travel_time,
-        };
-        console.log(input);
+    // Hàm chuẩn hóa ghi chú
+    const normalizeNote = (note) => {
+      if (!note) return '';
+      return note.toLowerCase()
+        .replace(/trc/g, 'trước')
+        .replace(/gap/g, 'gấp')
+        .replace(/sn/g, 'sớm')
+        .replace(/nhah/g, 'nhanh')
+        .replace(/sang/g, 'sáng')
+        .replace(/chiu/g, 'chiều')
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
 
-        const currentTime = moment()
-          .tz("Asia/Ho_Chi_Minh")
-          .format("YYYY-MM-DD HH:mm:ss");
-        const promptWithTime = `
-Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhiệm vụ của bạn là:
+    // Hàm parse ghi chú bằng regex
+    const parseDeliveryNote = (note, travelTime, order) => {
+      const currentTime = moment().tz("Asia/Ho_Chi_Minh");
+      const isSaturday = currentTime.day() === 6; // Thứ Bảy
+      let deliveryDeadline = null;
+      let priority = 0;
 
-- Nhận một đơn hàng làm đầu vào, với các trường: \`id_order\`, \`Ghichu\`, và \`travel_time\` (số phút ước tính để giao đến nơi).
-- Phân tích \`Ghichu\` để xác định:
-  - \`delivery_deadline\`: Thời điểm giao hàng mong muốn (định dạng \`YYYY-MM-DD HH:mm:ss\`, múi giờ hệ thống, hoặc \`null\` nếu không xác định được).
-  - \`priority\`: Mức độ ưu tiên giao hàng (2: gấp, 1: ưu tiên, 0: bình thường).
-**travel_time là: ${input.travel_time} phút** 
-**Thời gian hiện tại là: ${currentTime}**.
+      // Chuẩn hóa ghi chú
+      const normalizedNote = normalizeNote(note);
 
-**Thời gian làm việc:**
-- Bắt đầu: 08:10
-- Kết thúc: 17:45 (giao hàng phải kết thúc **trước 17:40**)
-- Nghỉ trưa: 12:00 – 13:30
-
-### QUY TẮC XỬ LÝ:
-
-1. **Ưu tiên gấp (priority = 2)**:
-   - Nếu \`Ghichu\` chứa từ: "gấp", "ngay", "nhanh", "nhanh tí", "liền", "ngay lập tức", "som nhat", "len nhe", "gap", "sn", "nhah" →
-     - \`delivery_deadline\` = thời gian hiện tại + travel_time + 15 phút
-     - Nếu > 17:40:00 → giới hạn thành 17:40:00
-     - Nếu < 08:00:00 → giới hạn thành 08:00:00 + travel_time + 15 phút
-     - Nếu > 12:00:00 và < 13:30:00 → giới hạn thành 13:30:00 + travel_time + 15 phút
-     - \`priority\` = 2
-
-2. **Thời gian cụ thể (priority = 1 hoặc 2)**:
-   - Nếu \`Ghichu\` chứa "giao trước" + giờ (vd: "trước 16h", "trc 14:30", "trước ăn trưa") →
-     - Trừ 15 phút (5 phút buffer + 10 phút chuẩn bị)
-     - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
-     - Nếu là "trước ăn tối": 17:40:00 - 5 phút (buffer) - 10 phút = 17:25:00
-     - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
-     - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
-     - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
-
-3. **Mơ hồ (priority = 1 hoặc 2)**:
-   - "đầu giờ chiều" → 13:30:00 → \`priority\` = 1
-   - "chiều nay", "hôm nay" → trước 17:40 → \`priority\` = 1, nếu <30 phút → \`priority\` = 2
-   - "sáng mai", "ngày mai đầu giờ" → 08:00:00 ngày mai → \`priority\` = 1
-   - "ngày mai chiều", "ngày mai tối" → 13:30:00 ngày mai → \`priority\` = 1
-   - "ngày mốt", "ngày mốt chiều" → 08:00:00 hoặc 13:30:00 ngày mốt → \`priority\` = 1
-   - "tuần sau", "tuần sau trước 10h" → 08:00:00 hoặc 09:50:00 thứ Hai tuần sau → \`priority\` = 1
-
-4. **Không xác định (priority = 0)**:
-   - Ví dụ: "giao lúc nào cũng được" → \`delivery_deadline\` = null, \`priority\` = 0
-
-5. **Lỗi chính tả & ngôn ngữ tự nhiên**:
-   - "trc" = "trước", "gap" = "gấp", "sn" = "sớm", "nhah" = "nhanh"
-   - Hiểu các câu như: "giao nhanh tí đi nha", "trước ăn tối nha bạn"...
-
-**Đầu ra dạng JSON như sau:**
-\`\`\`json
-{
-  "id_order": "...",
-  "delivery_deadline": "YYYY-MM-DD HH:mm:ss",
-  "priority": 2|1|0
-}
-\`\`\`
-`;
-
-        try {
-          const response = await axios.post(process.env.LOCALAI_API_URL, {
-            model: "qwen3:8B",
-            temperature: 0,
-            messages: [
-              {
-                role: "user",
-                content: promptWithTime,
-              },
-              {
-                role: "user",
-                content: JSON.stringify(input),
-              },
-            ],
-          });
-
-          const result = JSON.parse(response.data.message.content);
-          console.log(`Kết quả AI cho id_order ${order.id_order}:`, result);
-
-          let deliveryDeadline = null;
-          if (result.delivery_deadline) {
-            try {
-              const date = new Date(result.delivery_deadline);
-              if (!isNaN(date.getTime())) {
-                deliveryDeadline = result.delivery_deadline;
-                console.log(
-                  `Thời gian hợp lệ cho id_order ${order.id_order}: ${deliveryDeadline}`
-                );
-              } else {
-                console.warn(
-                  `Thời gian không hợp lệ cho id_order ${order.id_order}: ${result.delivery_deadline}`
-                );
-              }
-            } catch (error) {
-              console.warn(
-                `Lỗi khi phân tích thời gian cho id_order ${order.id_order}:`,
-                error.message
-              );
+      // 1. Ưu tiên gấp
+      const urgentRegex = /(gấp|ngay|nhanh|nhanh tí|nhanh lên|liền|ngay lập tức|sớm nhất|sớm tí|sớm nhé|len nhe|gấp lắm|khẩn cấp|urgent|hỏa tốc|nhanh nhất|mau lên|nhanh nha|sớm nhất có thể|sáng sớm)/i;
+      if (urgentRegex.test(normalizedNote)) {
+        deliveryDeadline = currentTime.clone().add(travelTime + 15, 'minutes');
+        priority = 2;
+      }
+      // 2. Thời gian cụ thể
+      else {
+        const specificTimeRegex = /trước\s*(?:(\d{1,2}(?::\d{2})?(?:h|pm|am)?)|ăn trưa|ăn tối|(\d{1,2}h\d{2}))(?:\s*(sáng|chiều))?/i;
+        const specificMatch = normalizedNote.match(specificTimeRegex);
+        if (specificMatch) {
+          if (specificMatch[1] || specificMatch[2]) { // "trước 14h", "trc 14:30", "trước 14h30"
+            let timeStr = specificMatch[1] || specificMatch[2].replace('h', ':');
+            if (!timeStr.includes(':')) timeStr += ':00';
+            deliveryDeadline = currentTime.clone().startOf('day').add(moment.duration(timeStr));
+            if (specificMatch[3] === 'chiều' && deliveryDeadline.hour() < 12) {
+              deliveryDeadline.add(12, 'hours');
+            } else if (specificMatch[3] === 'sáng' && deliveryDeadline.hour() >= 12) {
+              deliveryDeadline.subtract(12, 'hours');
+            }
+            deliveryDeadline.subtract(15, 'minutes');
+            const timeToDeadline = deliveryDeadline.diff(currentTime, 'minutes');
+            priority = timeToDeadline <= travelTime + 15 ? 2 : 1;
+          } else if (specificMatch[0].includes('ăn trưa')) {
+            deliveryDeadline = currentTime.clone().startOf('day').add(11, 'hours').add(45, 'minutes');
+            priority = 1;
+          } else if (specificMatch[0].includes('ăn tối')) {
+            deliveryDeadline = currentTime.clone().startOf('day').add(17, 'hours').add(25, 'minutes');
+            priority = 1;
+          }
+        }
+        // 3. Mơ hồ
+        else {
+          const vagueRegex = /(đầu giờ chiều|chiều nay|hôm nay|sáng nay|trong sáng nay|trong chiều nay|sáng mai|ngày mai đầu giờ|ngày mai chiều|ngày mai tối|ngày mốt|ngày kia|tuần sau|thứ hai|sáng (\d+) ngày nữa|ngày mai|cuối giờ|đầu giờ)/i;
+          const vagueMatch = normalizedNote.match(vagueRegex);
+          if (vagueMatch) {
+            switch (vagueMatch[0].toLowerCase()) {
+              case 'đầu giờ':
+                deliveryDeadline = currentTime.clone().startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                priority = 1;
+                break;
+              case 'đầu giờ chiều':
+                deliveryDeadline = currentTime.clone().startOf('day').add(13, 'hours').add(30, 'minutes').add(travelTime + 15, 'minutes');
+                priority = 1;
+                break;
+              case 'chiều nay':
+              case 'trong chiều nay':
+                deliveryDeadline = currentTime.clone().startOf('day').add(17, 'hours').add(40, 'minutes');
+                priority = deliveryDeadline.diff(currentTime, 'minutes') < 30 ? 2 : 1;
+                break;
+              case 'hôm nay':
+                deliveryDeadline = currentTime.clone().startOf('day').add(17, 'hours').add(40, 'minutes');
+                priority = deliveryDeadline.diff(currentTime, 'minutes') < 60 ? 2 : 1;
+                break;
+              case 'sáng nay':
+                deliveryDeadline = currentTime.clone().startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                priority = deliveryDeadline.diff(currentTime, 'minutes') < 30 ? 2 : 1;
+                break;
+              case 'trong sáng nay':
+                deliveryDeadline = currentTime.clone().startOf('day').add(11, 'hours').add(45, 'minutes');
+                priority = deliveryDeadline.diff(currentTime, 'minutes') < 30 ? 2 : 1;
+                break;
+              case 'sáng mai':
+              case 'ngày mai đầu giờ':
+              case 'ngày mai':
+                deliveryDeadline = currentTime.clone().add(1, 'day').startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                priority = 1;
+                break;
+              case 'ngày mai chiều':
+                deliveryDeadline = currentTime.clone().add(1, 'day').startOf('day').add(13, 'hours').add(30, 'minutes').add(travelTime + 15, 'minutes');
+                priority = 1;
+                break;
+              case 'ngày mai tối':
+                deliveryDeadline = currentTime.clone().add(1, 'day').startOf('day').add(17, 'hours').add(40, 'minutes');
+                priority = 1;
+                break;
+              case 'ngày mốt':
+              case 'ngày kia':
+              case 'sáng 2 ngày nữa':
+                deliveryDeadline = currentTime.clone().add(2, 'days').startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                priority = 1;
+                break;
+              case 'tuần sau':
+              case 'thứ hai':
+                deliveryDeadline = currentTime.clone().startOf('week').add(1, 'week').startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                if (currentTime.day() === 0) { // Nếu là Chủ Nhật
+                  deliveryDeadline.add(1, 'day');
+                }
+                priority = 1;
+                break;
+              case 'cuối giờ':
+                deliveryDeadline = currentTime.clone().startOf('day').add(17, 'hours').add(40, 'minutes');
+                priority = deliveryDeadline.diff(currentTime, 'minutes') < 60 ? 2 : 1;
+                break;
+              default:
+                if (vagueMatch[1]) { // "sáng x ngày nữa"
+                  const days = parseInt(vagueMatch[1], 10);
+                  deliveryDeadline = currentTime.clone().add(days, 'days').startOf('day').add(8, 'hours').add(travelTime + 15, 'minutes');
+                  priority = 1;
+                }
+                break;
             }
           }
-
-          let priority = parseInt(result.priority, 10);
-          if (isNaN(priority) || priority < 0 || priority > 2) {
-            console.warn(
-              `Priority không hợp lệ cho id_order ${order.id_order}: ${result.priority}, gán mặc định priority = 0`
-            );
-            priority = 0;
-          }
-
-          console.log(
-            `Chuẩn bị cập nhật id_order ${order.id_order}: priority=${priority}, delivery_deadline=${deliveryDeadline}`
-          );
-
-          if (priority > 0 || deliveryDeadline) {
-            priorityOrders.push([priority, deliveryDeadline, result.id_order]);
-          }
-
-          return result;
-        } catch (error) {
-          console.error(
-            `Lỗi khi gọi AI local cho id_order ${order.id_order}:`,
-            error.message
-          );
-          return null;
         }
+      }
+
+      // 4. Điều chỉnh giờ làm việc
+      if (deliveryDeadline) {
+        const startOfDay = deliveryDeadline.clone().startOf('day'); // Dùng ngày của deliveryDeadline
+        const workStart = startOfDay.clone().add(8, 'hours');
+        const workEnd = isSaturday
+          ? startOfDay.clone().add(16, 'hours').add(30, 'minutes')
+          : startOfDay.clone().add(17, 'hours').add(40, 'minutes');
+        const lunchStart = startOfDay.clone().add(12, 'hours');
+        const lunchEnd = startOfDay.clone().add(13, 'hours').add(30, 'minutes');
+
+        // Kiểm tra và điều chỉnh nếu nằm trong giờ nghỉ trưa (12:00 - 13:30)
+        let isDuringLunchBreak = false;
+        if (deliveryDeadline.isSameOrAfter(lunchStart) && deliveryDeadline.isBefore(lunchEnd)) {
+          deliveryDeadline = lunchEnd.clone().add(travelTime + 15, 'minutes');
+          isDuringLunchBreak = true;
+        }
+
+        // Kiểm tra các giới hạn khác
+        if (deliveryDeadline.isBefore(workStart)) {
+          deliveryDeadline = workStart.clone().add(travelTime + 15, 'minutes');
+        } else if (deliveryDeadline.isAfter(workEnd)) {
+          deliveryDeadline = workEnd;
+        }
+
+        // Đảm bảo deadline hợp lệ
+        if (deliveryDeadline.isBefore(currentTime)) {
+          deliveryDeadline = currentTime.clone().add(travelTime + 15, 'minutes');
+          priority = 2;
+        } else if (isDuringLunchBreak) {
+          // Tính thời gian từ lúc bắt đầu làm việc (13:30) đến delivery_deadline
+          const timeFromWorkStart = deliveryDeadline.diff(lunchEnd, 'minutes');
+          priority = timeFromWorkStart < 60 ? 2 : 1;
+        }
+
+        return {
+          id_order: order.id_order,
+          delivery_deadline: deliveryDeadline.format('YYYY-MM-DD HH:mm:ss'),
+          priority
+        };
+      }
+
+      // 5. Không xác định
+      return {
+        id_order: order.id_order,
+        delivery_deadline: null,
+        priority: 0
+      };
+    };
+
+    const parsePromises = orders.map((order) =>
+      limit(async () => {
+        const result = parseDeliveryNote(order.delivery_note, order.travel_time, order);
+        console.log(`Kết quả phân tích cho id_order ${order.id_order}:`, result);
+        if (result.priority > 0 || result.delivery_deadline) {
+          priorityOrders.push([result.priority, result.delivery_deadline, order.id_order]);
+        }
+        return result;
       })
     );
 
-    const results = await Promise.all(aiPromises);
-    console.log(`Số lượng kết quả từ AI: ${results.length}`);
-
-    const validResults = results.filter((result) => result !== null);
-    console.log(`Số lượng kết quả hợp lệ: ${validResults.length}`);
+    await Promise.all(parsePromises);
 
     if (priorityOrders.length > 0) {
       for (const [priority, deliveryDeadline, idOrder] of priorityOrders) {
         try {
           const [updateResult] = await connection.query(
             `
-        UPDATE orders
-        SET priority = ?, delivery_deadline = ?
-        WHERE id_order = ?
-        `,
+            UPDATE orders
+            SET priority = ?, delivery_deadline = ?
+            WHERE id_order = ?
+            `,
             [priority, deliveryDeadline, idOrder]
           );
-          console.log(
-            `Cập nhật thành công id_order ${idOrder}: priority=${priority}, delivery_deadline=${deliveryDeadline}, affectedRows=${updateResult.affectedRows}`
-          );
+          console.log(`Cập nhật thành công id_order ${idOrder}: priority=${priority}, delivery_deadline=${deliveryDeadline}`);
         } catch (error) {
           console.error(`Lỗi khi cập nhật id_order ${idOrder}:`, error.message);
         }
       }
     } else {
-      console.log(
-        "Không có đơn hàng nào để cập nhật priority/delivery_deadline"
-      );
+      console.log("Không có đơn hàng nào để cập nhật");
     }
 
     await connection.end();
-    console.log(
-      `analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`
-    );
+    console.log(`analyzeDeliveryNote thực thi trong ${Date.now() - startTime}ms`);
   } catch (error) {
     console.error("Lỗi trong analyzeDeliveryNote:", error.message);
     throw error;
