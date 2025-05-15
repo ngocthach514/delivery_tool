@@ -1345,7 +1345,7 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
    - Nếu \`Ghichu\` chứa "giao trước" + giờ (vd: "trước 16h", "trc 14:30", "trước ăn trưa") →
      - Trừ 15 phút (5 phút buffer + 10 phút chuẩn bị)
      - Nếu là "trước ăn trưa": 12:00:00 → lấy giờ đó - 5 phút (buffer) - 10 phút = 11:45:00
-     - Nếu là "trước ăn tối": 17:40:00 - 5 phút (buffer) - 10 phút = 17:15:00
+     - Nếu là "trước ăn tối": 17:40:00 - 5 phút (buffer) - 10 phút = 17:25:00
      - Nếu có giờ cụ thể (như "16h", "14:30") → lấy giờ đó - 5 phút (buffer) - 10 phút
      - Nếu giờ vượt ngoài 08:00 – 17:40 → giới hạn về khung hợp lệ
      - Nếu khoảng cách đến giờ đó < travel_time phút → \`priority\` = 2, ngược lại \`priority\` = 1
