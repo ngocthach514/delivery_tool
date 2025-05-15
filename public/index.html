@@ -310,7 +310,7 @@
             o.distance !== null ? o.distance.toFixed(2) : "N/A",
             o.travel_time,
             priorityText,
-            formatDateTime(o.created_at),
+            formatDateTime(o.address_created_at || o.created_at),
             formatDateTime(o.delivery_deadline),
             o.delivery_note,
           ].forEach((txt) => {

@@ -1323,7 +1323,7 @@ Bạn là một AI chuyên phân tích ghi chú giao hàng tiếng Việt. Nhi�
 - Phân tích \`Ghichu\` để xác định:
   - \`delivery_deadline\`: Thời điểm giao hàng mong muốn (định dạng \`YYYY-MM-DD HH:mm:ss\`, múi giờ hệ thống, hoặc \`null\` nếu không xác định được).
   - \`priority\`: Mức độ ưu tiên giao hàng (2: gấp, 1: ưu tiên, 0: bình thường).
-**travel_time là: ${input.travel_time}** 
+**travel_time là: ${input.travel_time} phút** 
 **Thời gian hiện tại là: ${currentTime}**.
 
 **Thời gian làm việc:**
@@ -1749,11 +1749,11 @@ app.get("/orders/filter-advanced", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
 
-    let dateCondition = "DATE(o.created_at) = CURDATE()";
+    let dateCondition = "DATE(a.created_at) = CURDATE()";
     if (day === "yesterday") {
-      dateCondition = "DATE(o.created_at) = CURDATE() - INTERVAL 1 DAY";
+      dateCondition = "DATE(a.created_at) = CURDATE() - INTERVAL 1 DAY";
     } else if (day === "older") {
-      dateCondition = "DATE(o.created_at) < CURDATE() - INTERVAL 1 DAY";
+      dateCondition = "DATE(a.created_at) < CURDATE() - INTERVAL 1 DAY";
     }
 
     const filters = [dateCondition];
@@ -1773,11 +1773,16 @@ app.get("/orders/filter-advanced", async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT 
+        o.*, 
+        a.address, a.district, a.ward, 
+        a.distance, a.travel_time, 
+        a.created_at AS address_created_at,
+        a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE ${whereClause}
-      ORDER BY o.created_at DESC
+      ORDER BY a.created_at DESC
       `,
       values
     );
