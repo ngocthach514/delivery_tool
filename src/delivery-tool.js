@@ -1610,83 +1610,90 @@ async function main(page = 1, io) {
   const startTime = Date.now();
   try {
     console.log(
-      "Khởi động công cụ giao hàng lúc:",
+      "🚀 Khởi động công cụ giao hàng lúc:",
       moment().tz("Asia/Ho_Chi_Minh").format()
     );
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 1: Cập nhật trạng thái đơn hàng...");
+    console.log("📋 Bước 1: Cập nhật trạng thái đơn hàng...");
     await updateOrderStatusToCompleted();
-    console.log("Đã cập nhật trạng thái các đơn hàng hoàn thành");
+    console.log("✅ Đã cập nhật trạng thái các đơn hàng hoàn thành");
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 2: Cập nhật trạng thái ưu tiên đơn hàng...");
+    console.log("⏫ Bước 2: Cập nhật trạng thái ưu tiên đơn hàng...");
     await updatePriorityStatus(io);
-    console.log("Đã cập nhật trạng thái ưu tiên");
+    console.log("✅ Đã cập nhật trạng thái ưu tiên");
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 3: Lấy và lưu đơn hàng...");
+    console.log("📦 Bước 3: Lấy và lưu đơn hàng...");
     const orders = await fetchAndSaveOrders();
-    console.log("Đã lưu đơn hàng:", orders.length);
+    console.log(`✅ Đã lưu đơn hàng: ${orders.length}`);
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 4: Phân tích ghi chú đơn hàng...");
+    console.log("📝 Bước 4: Phân tích ghi chú đơn hàng...");
     await analyzeDeliveryNote();
-    console.log("Đã phân tích ghi chú và cập nhật ưu tiên");
+    console.log("✅ Đã phân tích ghi chú và cập nhật ưu tiên");
     console.log(
       "================================================================="
     );
 
     if (orders.length === 0) {
-      console.log("Không có đơn hàng mới, lấy danh sách đơn hàng hiện có...");
+      console.log(
+        "ℹ️ Không có đơn hàng mới, lấy danh sách đơn hàng hiện có..."
+      );
       const groupedOrders = await groupOrders(page);
-      console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
-      console.log("Công cụ giao hàng hoàn tất.");
-      console.log(`main thực thi trong ${Date.now() - startTime}ms`);
+      console.log(
+        "📊 Kết quả đơn hàng:",
+        JSON.stringify(groupedOrders, null, 2)
+      );
+      console.log("🏁 Công cụ giao hàng hoàn tất.");
+      console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
       return groupedOrders;
     }
 
-    console.log("Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
+    console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
     const standardizedOrders = await standardizeAddresses(orders);
-    console.log("Đã chuẩn hóa và ánh xạ đơn hàng:", standardizedOrders.length);
+    console.log(
+      `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
+    );
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 6: Cập nhật địa chỉ chuẩn hóa...");
+    console.log("💾 Bước 6: Cập nhật địa chỉ chuẩn hóa...");
     await updateStandardizedAddresses(standardizedOrders);
-    console.log("Đã cập nhật địa chỉ chuẩn hóa");
+    console.log("✅ Đã cập nhật địa chỉ chuẩn hóa");
     console.log(
       "================================================================="
     );
 
-    console.log("Bước 7: Tính toán khoảng cách và thời gian...");
+    console.log("📏 Bước 7: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
-    console.log("Đã tính toán khoảng cách và thời gian");
+    console.log("✅ Đã tính toán khoảng cách và thời gian");
     console.log(
       "================================================================="
     );
 
-    console.log(`Bước 8: Lấy đơn hàng gần nhất (trang ${page})...`);
+    console.log(`🔍 Bước 8: Lấy đơn hàng gần nhất (trang ${page})...`);
     const groupedOrders = await groupOrders(page);
-    console.log("Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
+    console.log("📊 Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
     console.log(
       "================================================================="
     );
 
-    console.log("Công cụ giao hàng hoàn tất.");
-    console.log(`main thực thi trong ${Date.now() - startTime}ms`);
+    console.log("🏁 Công cụ giao hàng hoàn tất.");
+    console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
     return groupedOrders;
   } catch (error) {
-    console.error("Lỗi trong main:", error.message);
+    console.error("❌ Lỗi trong main:", error.message);
     throw error;
   }
 }
