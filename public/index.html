@@ -42,6 +42,27 @@
         border-collapse: collapse;
         margin-bottom: 20px;
       }
+      thead {
+        background-color: #003087 !important;
+        color: white;
+      }
+      tbody tr:nth-child(odd) {
+        background-color: #e6f3ff;
+      }
+      tbody tr:nth-child(even) {
+        background-color: #ffffff;
+      }
+      td.priority-urgent {
+        background-color: #ff9999 !important;
+        color: #660000;
+      }
+      td.priority-high {
+        background-color: #ffe5e5 !important;
+        color: #804040;
+      }
+      td.priority-normal {
+        background-color: inherit !important;
+      }
       th,
       td {
         padding: 10px;
@@ -57,18 +78,6 @@
       }
       tr:hover {
         filter: brightness(0.95);
-      }
-      td.priority-urgent {
-        background-color: #ff9999;
-        color: #660000;
-      }
-      td.priority-high {
-        background-color: #ffe5e5;
-        color: #804040;
-      }
-      td.priority-normal {
-        background-color: #ffffff;
-        color: #000000;
       }
       .pagination {
         position: fixed;
@@ -144,6 +153,10 @@
       .notification-item-text {
         color: red;
       }
+      td.red-text {
+        color: red !important;
+        font-weight: bold;
+      }
       .notification-item.unviewed {
         font-weight: bold;
         background-color: #ffe6e6;
@@ -193,12 +206,30 @@
       .mark-all-read:hover {
         background-color: #45a049;
       }
+      .cell {
+        white-space: pre-line;
+      }
+      .countdown-timer {
+        margin-bottom: 10px;
+        font-size: 14px;
+        font-weight: bold;
+        color: #4caf50;
+      }
+      .countdown-timer.warning {
+        color: #ff9800;
+      }
+      .countdown-timer.critical {
+        color: #f44336;
+      }
     </style>
   </head>
 
   <body>
     <div class="container">
-      <h1>Danh sách đơn hàng</h1>
+      <h1>DANH SÁCH ĐƠN HÀNG</h1>
+      <div class="countdown-timer" id="countdown-timer">
+        Thời gian đến lần cập nhật tiếp theo: 5m 0s
+      </div>
 
       <div class="filter-container">
         <input
@@ -280,12 +311,48 @@
       let currentDateFilter = null;
       let viewedNotifications =
         JSON.parse(localStorage.getItem("viewedNotifications")) || [];
+      let countdownInterval = null;
+      let isUserInteracting = false;
 
       function saveViewedNotifications() {
         localStorage.setItem(
           "viewedNotifications",
           JSON.stringify(viewedNotifications)
         );
+      }
+
+      function startCountdownTimer(nextRunTime) {
+        if (countdownInterval) {
+          clearInterval(countdownInterval);
+        }
+        const countdownElement = document.getElementById("countdown-timer");
+        countdownInterval = setInterval(() => {
+          const now = moment().tz("Asia/Ho_Chi_Minh");
+          const nextRun = moment(nextRunTime).tz("Asia/Ho_Chi_Minh");
+          const secondsLeft = nextRun.diff(now, "seconds");
+
+          if (secondsLeft <= 0) {
+            countdownElement.textContent =
+              "Đang cập nhật danh sách đơn hàng...";
+            countdownElement.className = "countdown-timer";
+            nextRunTime = moment(nextRun)
+              .add(5, "minutes")
+              .startOf("minute")
+              .format("YYYY-MM-DD HH:mm:ss");
+            return;
+          }
+
+          const minutes = Math.floor(secondsLeft / 60);
+          const seconds = secondsLeft % 60;
+          countdownElement.textContent = `Thời gian đến lần cập nhật tiếp theo: ${minutes}m ${seconds}s`;
+
+          countdownElement.className = "countdown-timer";
+          if (secondsLeft <= 60) {
+            countdownElement.className = "countdown-timer critical";
+          } else if (secondsLeft <= 120) {
+            countdownElement.className = "countdown-timer warning";
+          }
+        }, 1000);
       }
 
       async function loadLocations() {
@@ -333,12 +400,20 @@
       fetchOverdueOrders();
 
       const socket = io();
-      socket.on("connect", () => console.log("Đã kết nối Socket.IO"));
+      socket.on("connect", () => {
+        console.log("Đã kết nối Socket.IO");
+      });
       socket.on("connect_error", (err) => {
         console.error("Lỗi kết nối Socket.IO:", err.message);
         $("#error")
           .text("Lỗi kết nối thời gian thực: " + err.message)
           .show();
+      });
+      socket.on("cronTimeUpdate", (data) => {
+        console.log("Nhận nextRunTime từ server:", data.nextRunTime);
+        if (data.nextRunTime) {
+          startCountdownTimer(data.nextRunTime);
+        }
       });
       socket.on("statusUpdated", (data) => {
         $("#notification-list").append(
@@ -353,11 +428,51 @@
             $("#notification-dropdown").removeClass("show");
           }
         }, 3000);
-        fetchOrders(currentPage);
+        if (!isUserInteracting) {
+          fetchOrders(currentPage);
+        }
         fetchOverdueOrders();
       });
       socket.on("overdueOrdersUpdated", (data) => {
         fetchOverdueOrders();
+      });
+      socket.on("ordersUpdated", (data) => {
+        console.log("Nhận danh sách đơn hàng mới từ Socket.IO:", data);
+        if (isUserInteracting) {
+          console.log("Bỏ qua làm mới bảng do người dùng đang tương tác");
+          if (data.nextRunTime) {
+            startCountdownTimer(data.nextRunTime);
+          }
+          return;
+        }
+
+        if (data.data) {
+          totalPages = data.data.totalPages || 1;
+          currentPage = data.data.currentPage || 1;
+          allOrders = data.data.orders || [];
+
+          const keyword = $("#searchInput").val().trim();
+          const selectedDistricts = $("#districtSelect").val() || [];
+          const selectedWards = $("#wardSelect").val() || [];
+          const hasFilters =
+            selectedDistricts.length > 0 || selectedWards.length > 0;
+          const hasSearch = keyword.length > 0;
+
+          if (hasSearch) {
+            console.log("Giữ trạng thái tìm kiếm, gọi searchOrder");
+            searchOrder();
+          } else if (hasFilters || currentDateFilter) {
+            console.log("Giữ trạng thái bộ lọc, gọi applyFilters");
+            applyFilters();
+          } else {
+            console.log("Làm mới bảng với dữ liệu từ ordersUpdated");
+            renderOrders(data.data.orders);
+            renderPagination();
+          }
+        }
+        if (data.nextRunTime) {
+          startCountdownTimer(data.nextRunTime);
+        }
       });
 
       $("#notification-bell").on("click", function () {
@@ -386,6 +501,20 @@
           }
         }
       );
+
+      // Xử lý tương tác người dùng để tạm dừng làm mới
+      $("#searchInput").on("input", () => {
+        isUserInteracting = true;
+        setTimeout(() => {
+          isUserInteracting = false;
+        }, 1000);
+      });
+      $("#districtSelect, #wardSelect, #dateFilter").on("change", () => {
+        isUserInteracting = true;
+        setTimeout(() => {
+          isUserInteracting = false;
+        }, 1000);
+      });
 
       function markAllNotificationsRead() {
         $("#notification-list .notification-item[data-order-id]").each(
@@ -613,15 +742,15 @@
         table.innerHTML = `
           <thead>
             <tr>
-              <th>Mã đơn</th>
-              <th>Địa chỉ</th>
-              <th>Khoảng cách quy định</th>
-              <th>Khoảng cách thực</th>
-              <th>Thời gian di chuyển</th>
-              <th>Ưu tiên</th>
-              <th>Thời gian tạo</th>
-              <th>Giao theo yêu cầu</th>
-              <th>Ghi chú</th>
+              <th>MÃ ĐƠN</th>
+              <th>ĐỊA CHỈ GIAO HÀNG <br> ĐỊA CHỈ HÓA ĐƠN</th>
+              <th>KHOẢNG CÁCH QUY ĐỊNH <br>(km)</th>
+              <th>KHOẢNG CÁCH THỰC <br>(km)</th>
+              <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
+              <th>ĐỘ ƯU TIÊN</th>
+              <th>THỜI GIAN GIAO HÀNG</th>
+              <th>GIAO THEO YÊU CẦU</th>
+              <th>GHI CHÚ KHÁCH HÀNG</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -655,31 +784,52 @@
           }
 
           const cells = [
-            o.id_order,
-            o.address || "N/A",
-            typeof o.SOKM === "number" && !isNaN(o.SOKM)
-              ? o.SOKM.toFixed(2)
-              : "N/A",
-            o.distance !== null ? o.distance.toFixed(2) : "N/A",
-            o.travel_time !== null ? o.travel_time : "N/A",
-            priorityText,
-            o.created_at
-              ? moment(o.created_at)
-                  .tz("Asia/Ho_Chi_Minh")
-                  .format("DD/MM/YYYY HH:mm:ss")
-              : "N/A",
-            o.delivery_deadline
-              ? moment(o.delivery_deadline)
-                  .tz("Asia/Ho_Chi_Minh")
-                  .format("DD/MM/YYYY HH:mm:ss")
-              : "Không có",
-            o.delivery_note || "Không có",
+            { text: o.id_order, class: priorityClass },
+            {
+              text: `ĐCGH: ${o.address || "N/A"}\nĐCHĐ:${
+                o.source_address || "N/A"
+              }`,
+              class: `${priorityClass} cell`,
+            },
+            {
+              text:
+                o.SOKM != null && !isNaN(parseFloat(o.SOKM))
+                  ? parseFloat(o.SOKM).toFixed(2)
+                  : "N/A",
+              class: `${priorityClass} red-text`,
+            },
+            {
+              text: o.distance !== null ? o.distance.toFixed(2) : "N/A",
+              class: `${priorityClass} red-text`,
+            },
+            {
+              text: o.travel_time !== null ? o.travel_time : "N/A",
+              class: priorityClass,
+            },
+            { text: priorityText, class: priorityClass },
+            {
+              text: o.created_at
+                ? moment(o.created_at)
+                    .tz("Asia/Ho_Chi_Minh")
+                    .format("DD/MM/YYYY HH:mm:ss")
+                : "N/A",
+              class: priorityClass,
+            },
+            {
+              text: o.delivery_deadline
+                ? moment(o.delivery_deadline)
+                    .tz("Asia/Ho_Chi_Minh")
+                    .format("DD/MM/YYYY HH:mm:ss")
+                : "Không có",
+              class: priorityClass,
+            },
+            { text: o.delivery_note || "Không có", class: priorityClass },
           ];
 
-          cells.forEach((txt) => {
+          cells.forEach((cell) => {
             const td = document.createElement("td");
-            td.textContent = txt;
-            td.className = priorityClass;
+            td.textContent = cell.text;
+            td.className = cell.class;
             row.appendChild(td);
           });
           tbody.appendChild(row);

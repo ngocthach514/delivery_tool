@@ -20,8 +20,22 @@ const port = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static("public"));
 
+function getNextCronRunTime() {
+  const now = moment().tz("Asia/Ho_Chi_Minh");
+  const minutes = now.minute();
+  const nextMinute = Math.ceil((minutes + 1) / 5) * 5;
+  return now
+    .startOf("hour")
+    .minute(nextMinute)
+    .second(0)
+    .format("YYYY-MM-DD HH:mm:ss");
+}
+
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
+  socket.emit("cronTimeUpdate", {
+    nextRunTime: getNextCronRunTime(),
+  });
   socket.on("disconnect", () => {
     console.log("Client disconnected:", socket.id);
   });
@@ -41,14 +55,6 @@ const API_1 = process.env.API_1_URL;
 const API_2_BASE = process.env.API_2_BASE_URL;
 const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
 const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
-const DEFAULT_ADDRESS = {
-  DcGiaohang: process.env.DEFAULT_ADDRESS,
-  District: "Quận Tân Bình",
-  Ward: "Phường 1",
-  Source: "Default",
-  Distance: 0,
-  TravelTime: 0,
-};
 
 const TRANSPORT_KEYWORDS = ["XE", "CHÀNH XE", "GỬI XE", "NHÀ XE", "XE KHÁCH"];
 
@@ -104,16 +110,6 @@ function isValidAddress(address) {
   return true;
 }
 
-function isInHoChiMinhCity(address) {
-  if (!address) return false;
-  const lowerAddress = address.toLowerCase();
-  return (
-    lowerAddress.includes("hồ chí minh") ||
-    lowerAddress.includes("tp. hồ chí minh") ||
-    !lowerAddress.includes("hà nội")
-  );
-}
-
 async function getValidOrderIds() {
   const startTime = Date.now();
   try {
@@ -142,8 +138,8 @@ async function checkRouteCache(originAddress, destinationAddress) {
       FROM route_cache
       WHERE origin_address = ? 
         AND destination_address = ?
-        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 24 HOUR)
+        AND calculated_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        AND calculated_at <= DATE_ADD(NOW(), INTERVAL 1 HOUR)
       ORDER BY calculated_at DESC
       LIMIT 1
       `,
@@ -237,12 +233,6 @@ async function geocodeAddress(address) {
 
 async function calculateRoute(originAddress, destinationAddress) {
   const startTime = Date.now();
-  if (!isInHoChiMinhCity(destinationAddress)) {
-    console.log(
-      `Bỏ qua tuyến đường cho ${destinationAddress}: Ngoài TP. Hồ Chí Minh`
-    );
-    return { distance: null, travelTime: null };
-  }
 
   const cacheResult = await checkRouteCache(originAddress, destinationAddress);
   if (cacheResult) {
@@ -273,8 +263,8 @@ async function calculateRoute(originAddress, destinationAddress) {
 
     if (response.data.routes && response.data.routes.length > 0) {
       const route = response.data.routes[0];
-      const distance = route.summary.lengthInMeters / 1000;
-      const travelTime = Math.ceil(route.summary.travelTimeInSeconds / 60);
+      const distance = route.summary.lengthInMeters / 1000; // km
+      const travelTime = Math.ceil(route.summary.travelTimeInSeconds / 60); // phút
       console.log(
         `Tuyến đường từ ${originAddress} đến ${destinationAddress}: ${distance} km, ${travelTime} phút`
       );
@@ -289,7 +279,7 @@ async function calculateRoute(originAddress, destinationAddress) {
 
   try {
     const result = await retry(run);
-    if (result.distance !== null || result.travelTime !== null) {
+    if (result.distance !== null && result.travelTime !== null) {
       await saveRouteToCache(
         originAddress,
         destinationAddress,
@@ -498,8 +488,13 @@ async function standardizeAddresses(orders) {
           );
           return {
             MaPX,
-            ...DEFAULT_ADDRESS,
+            DcGiaohang: process.env.DEFAULT_ADDRESS,
+            District: null,
+            Ward: null,
+            Source: "Default",
             isEmpty: false,
+            Distance: null,
+            TravelTime: null,
           };
         }
 
@@ -538,8 +533,8 @@ async function standardizeAddresses(orders) {
         2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
         3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
         4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
-        5. Nếu thiếu thông tin Phường/Xã, suy luận Phường/Xã phù hợp dựa trên tên đường và quận (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
-        6. Nếu thiếu Tỉnh/Thành phố, giả định là "TP. Hồ Chí Minh" khi địa chỉ có quận (ví dụ: Q1, Q2) trừ khi có dấu hiệu rõ ràng thuộc tỉnh khác.
+        5. Nếu thiếu thông tin Phường/Xã, suy luận Phường/Xã phù hợp dựa trên tên đường và quận/huyện (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
+        6. Nếu thiếu Tỉnh/Thành phố, suy luận tỉnh/thành phố dựa trên các yếu tố như quận/huyện, tên đường, hoặc từ khóa trong địa chỉ (ví dụ: "Q1" gợi ý TP. Hồ Chí Minh, "Kim Mã" gợi ý Hà Nội). Nếu không thể suy luận, đặt Tỉnh/Thành phố là null.
         7. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
         8. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
 
@@ -568,12 +563,12 @@ async function standardizeAddresses(orders) {
             "Ward": "Phường Đa Kao",
             "Source": "OpenAI"
           }
-        - "174-176-178 Bùi Thị Xuân - Q1" → 
+        - "123 Trần Hưng Đạo, TP Đà Nẵng" → 
           {
-            "MaPX": "TEMP_2",
-            "DcGiaohang": "174-178 Bùi Thị Xuân, Phường Phạm Ngũ Lão, Quận 1, Hồ Chí Minh, Việt Nam",
-            "District": "Quận 1",
-            "Ward": "Phường Phạm Ngũ Lão",
+            "MaPX": "TEMP_3",
+            "DcGiaohang": "123 Trần Hưng Đạo, Phường Hải Châu I, Quận Hải Châu, Đà Nẵng, Việt Nam",
+            "District": "Quận Hải Châu",
+            "Ward": "Phường Hải Châu I",
             "Source": "OpenAI"
           }
 
@@ -845,15 +840,20 @@ async function calculateDistances() {
     console.log("Các đơn hàng mới để tính khoảng cách:", orders.length);
 
     const addressMap = {};
+    const expressDeliveryOrders = []; // Lưu các đơn hàng CHUYỂN PHÁT NHANH
+
     orders.forEach((order) => {
-      if (!addressMap[order.address]) {
-        addressMap[order.address] = [];
+      if (order.address.toUpperCase() === "CHUYỂN PHÁT NHANH") {
+        expressDeliveryOrders.push(order.id_order);
+      } else {
+        if (!addressMap[order.address]) {
+          addressMap[order.address] = [];
+        }
+        addressMap[order.address].push(order.id_order);
       }
-      addressMap[order.address].push(order.id_order);
     });
 
     const uniqueAddresses = Object.keys(addressMap);
-    console.log("Số địa chỉ duy nhất:", uniqueAddresses.length);
 
     const limit = pLimit(2);
     const routePromises = uniqueAddresses.map((address) =>
@@ -873,6 +873,10 @@ async function calculateDistances() {
       addressMap[address].forEach((id_order) => {
         updateValues.push([id_order, distance, travelTime]);
       });
+    });
+
+    expressDeliveryOrders.forEach((id_order) => {
+      updateValues.push([id_order, null, null]);
     });
 
     if (updateValues.length > 0) {
@@ -1021,6 +1025,7 @@ async function groupOrders(page = 1, filterDate = null) {
         o.priority,
         o.delivery_deadline,
         o.delivery_note,
+        o.address AS source_address,
         CASE 
           WHEN DATE(oa.created_at) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -1091,6 +1096,7 @@ async function groupOrders(page = 1, filterDate = null) {
             .format("YYYY-MM-DD HH:mm:ss")
         : null,
       delivery_note: row.delivery_note,
+      source_address: row.source_address,
       district: row.district || null,
       ward: row.ward || null,
       days_old: row.days_old,
@@ -1666,12 +1672,12 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    // console.log("📦 Bước 3: Lấy và lưu đơn hàng...");
-    // const orders = await fetchAndSaveOrders();
-    // console.log(`✅ Đã lưu đơn hàng: ${orders.length}`);
-    // console.log(
-    //   "================================================================="
-    // );
+    console.log("📦 Bước 3: Lấy và lưu đơn hàng...");
+    const orders = await fetchAndSaveOrders();
+    console.log(`✅ Đã lưu đơn hàng: ${orders.length}`);
+    console.log(
+      "================================================================="
+    );
 
     console.log("📝 Bước 4: Phân tích ghi chú đơn hàng...");
     await analyzeDeliveryNote();
@@ -1680,35 +1686,47 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    // if (orders.length === 0) {
-    //   console.log(
-    //     "ℹ️ Không có đơn hàng mới, lấy danh sách đơn hàng hiện có..."
-    //   );
-    //   const groupedOrders = await groupOrders(page);
-    //   console.log(
-    //     "📊 Kết quả đơn hàng:",
-    //     JSON.stringify(groupedOrders, null, 2)
-    //   );
-    //   console.log("🏁 Công cụ giao hàng hoàn tất.");
-    //   console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
-    //   return groupedOrders;
-    // }
+    if (orders.length === 0) {
+      console.log(
+        "ℹ️ Không có đơn hàng mới, lấy danh sách đơn hàng hiện có..."
+      );
+      const groupedOrders = await groupOrders(page);
+      console.log(
+        "📊 Kết quả đơn hàng:",
+        JSON.stringify(groupedOrders, null, 2)
+      );
+      console.log("🏁 Công cụ giao hàng hoàn tất.");
+      console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
 
-    // console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
-    // const standardizedOrders = await standardizeAddresses(orders);
-    // console.log(
-    //   `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
-    // );
-    // console.log(
-    //   "================================================================="
-    // );
+      // Gửi sự kiện ordersUpdated với nextRunTime
+      if (io) {
+        io.emit("ordersUpdated", {
+          message: "Danh sách đơn hàng đã được cập nhật",
+          data: groupedOrders,
+          nextRunTime: getNextCronRunTime(),
+        });
+        console.log(
+          `Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`
+        );
+      }
+      return groupedOrders;
+    }
 
-    // console.log("💾 Bước 6: Cập nhật địa chỉ chuẩn hóa...");
-    // await updateStandardizedAddresses(standardizedOrders);
-    // console.log("✅ Đã cập nhật địa chỉ chuẩn hóa");
-    // console.log(
-    //   "================================================================="
-    // );
+    console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
+    const standardizedOrders = await standardizeAddresses(orders);
+    console.log(
+      `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
+    );
+    console.log(
+      "================================================================="
+    );
+
+    console.log("💾 Bước 6: Cập nhật địa chỉ chuẩn hóa...");
+    await updateStandardizedAddresses(standardizedOrders);
+    console.log("✅ Đã cập nhật địa chỉ chuẩn hóa");
+    console.log(
+      "================================================================="
+    );
 
     console.log("📏 Bước 7: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
@@ -1722,6 +1740,18 @@ async function main(page = 1, io) {
     console.log(
       "================================================================="
     );
+
+    // Gửi sự kiện ordersUpdated với nextRunTime
+    if (io) {
+      io.emit("ordersUpdated", {
+        message: "Danh sách đơn hàng đã được cập nhật",
+        data: groupedOrders,
+        nextRunTime: getNextCronRunTime(),
+      });
+      console.log(
+        `Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`
+      );
+    }
 
     console.log("🏁 Công cụ giao hàng hoàn tất.");
     console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
@@ -1749,7 +1779,7 @@ cron.schedule("*/5 * * * *", () => {
 });
 
 // Lập lịch đồng bộ trạng thái mỗi 15 phút
-cron.schedule("*/1 * * * *", () => {
+cron.schedule("*/15 * * * *", () => {
   console.log(
     "Chạy quy trình đồng bộ trạng thái lúc:",
     moment().tz("Asia/Ho_Chi_Minh").format()
