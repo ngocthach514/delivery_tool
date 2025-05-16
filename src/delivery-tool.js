@@ -1115,15 +1115,33 @@ async function syncOrderStatus() {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
+    
+    // Lấy đơn hàng cần đồng bộ
     const [orders] = await connection.query(
       `
-      SELECT id_order
+      SELECT id_order, created_at
       FROM orders
       WHERE status = 'Chờ xác nhận giao/lấy hàng'
-        AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+        AND created_at >= DATE_SUB(NOW(), INTERVAL 72 HOUR)
       `
     );
     console.log("Số lượng đơn hàng cần đồng bộ trạng thái:", orders.length);
+
+    const updateStatusPromises = orders.map(async (order) => {
+      const createdAt = moment(order.created_at);
+      const minutesSinceCreated = moment().diff(createdAt, "minutes");
+      if (minutesSinceCreated > 15) {
+        await connection.query(
+          `
+          UPDATE orders_address
+          SET status = 1
+          WHERE id_order = ? AND status = 0
+          `,
+          [order.id_order]
+        );
+      }
+    });
+    await Promise.all(updateStatusPromises);
 
     let api2RequestCount = 0;
     const limit = pLimit(10);
@@ -1179,6 +1197,11 @@ async function syncOrderStatus() {
 
     await connection.end();
     console.log(`syncOrderStatus thực thi trong ${Date.now() - startTime}ms`);
+
+    io.emit("overdueOrdersUpdated", {
+      message: "Danh sách đơn hàng quá hạn đã được cập nhật",
+      updatedCount: orders.length,
+    });
   } catch (error) {
     console.error("Lỗi trong syncOrderStatus:", error.message);
     throw error;
@@ -1726,9 +1749,9 @@ cron.schedule("*/5 * * * *", () => {
 });
 
 // Lập lịch đồng bộ trạng thái mỗi 15 phút
-cron.schedule("*/15 * * * *", () => {
+cron.schedule("*/1 * * * *", () => {
   console.log(
-    "Chạy quy trình giao hàng lúc:",
+    "Chạy quy trình đồng bộ trạng thái lúc:",
     moment().tz("Asia/Ho_Chi_Minh").format()
   );
   syncOrderStatus().catch((error) =>

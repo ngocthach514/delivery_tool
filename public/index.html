@@ -286,12 +286,10 @@
           "viewedNotifications",
           JSON.stringify(viewedNotifications)
         );
-        console.log("Đã lưu viewedNotifications:", viewedNotifications);
       }
 
       async function loadLocations() {
         try {
-          console.log("Đang tải danh sách quận/phường...");
           const locationRes = await fetch("/locations");
           if (!locationRes.ok) {
             throw new Error(
@@ -299,7 +297,6 @@
             );
           }
           const locationData = await locationRes.json();
-          console.log("Dữ liệu quận/phường:", locationData);
           initSelectFilters(locationData);
           locationLoaded = true;
         } catch (err) {
@@ -312,7 +309,6 @@
 
       async function fetchOverdueOrders() {
         try {
-          console.log("Đang gọi API /orders/overdue...");
           const res = await fetch("/orders/overdue");
           if (!res.ok) {
             const errorData = await res.json().catch(() => ({}));
@@ -323,7 +319,6 @@
             );
           }
           const data = await res.json();
-          console.log("Dữ liệu đơn hàng quá hạn:", data.orders);
           renderNotifications(data.orders || []);
         } catch (err) {
           console.error("Lỗi khi tải đơn hàng quá hạn:", err.message);
@@ -361,9 +356,11 @@
         fetchOrders(currentPage);
         fetchOverdueOrders();
       });
+      socket.on("overdueOrdersUpdated", (data) => {
+        fetchOverdueOrders();
+      });
 
       $("#notification-bell").on("click", function () {
-        console.log("Click vào chuông thông báo");
         $("#notification-dropdown").toggleClass("show");
       });
 
@@ -382,7 +379,6 @@
         function (e) {
           e.preventDefault();
           const orderId = $(this).attr("data-order-id");
-          console.log("Click vào thông báo với orderId:", orderId);
           if (orderId) {
             findOrderById(orderId);
           } else {
@@ -392,7 +388,6 @@
       );
 
       function markAllNotificationsRead() {
-        console.log("Đánh dấu tất cả thông báo đã đọc");
         $("#notification-list .notification-item[data-order-id]").each(
           function () {
             const orderId = $(this).attr("data-order-id");
@@ -418,7 +413,6 @@
               }
             ).length;
         $("#notification-count").text(count);
-        console.log("Số lượng thông báo chưa xem:", count);
       }
 
       function renderNotifications(overdueOrders) {
@@ -439,9 +433,6 @@
               .tz("Asia/Ho_Chi_Minh")
               .format("DD/MM/YYYY HH:mm:ss");
             const isViewed = viewedNotifications.includes(o.id_order);
-            console.log(
-              `Render thông báo cho orderId: ${o.id_order}, viewed: ${isViewed}`
-            );
             notificationList.append(
               `<div class="notification-item ${
                 isViewed ? "viewed" : "unviewed"
@@ -463,24 +454,23 @@
 
       async function findOrderById(orderId) {
         try {
-          console.log(`Gọi API /orders/find-by-id với id: ${orderId}`);
           $("#loading").addClass("show");
           $("#error").hide();
 
           const query = new URLSearchParams({ id: orderId });
           if (currentDateFilter) {
             query.append("date", currentDateFilter);
-            console.log(`Thêm date filter: ${currentDateFilter}`);
           }
 
           const res = await fetch(`/orders/find-by-id?${query.toString()}`);
-          const data = await res.json();
           if (!res.ok) {
+            const text = await res.text();
+            console.error("Phản hồi lỗi từ API:", text);
             throw new Error(
               `Không tìm thấy đơn hàng với mã này. Vui lòng kiểm tra lại.`
             );
           }
-          console.log("Dữ liệu đơn hàng trả về:", data);
+          const data = await res.json();
           if (data.order) {
             renderOrders([data.order]);
             $("#pagination").hide();
@@ -506,7 +496,6 @@
 
       async function fetchOrders(page = 1) {
         try {
-          console.log(`Gọi API ${apiUrl} với page: ${page}`);
           $("#loading").addClass("show");
           $("#error").hide();
 
@@ -528,7 +517,6 @@
             );
           }
           const data = await res.json();
-          console.log("Dữ liệu đơn hàng:", data);
 
           totalPages = data.totalPages || 1;
           currentPage = data.currentPage || 1;
@@ -611,7 +599,6 @@
       }
 
       function renderOrders(orders) {
-        console.log("Đang render đơn hàng:", orders);
         const wrapper = document.getElementById("orders-wrapper");
         wrapper.innerHTML = "";
         if (!orders || orders.length === 0) {
@@ -737,10 +724,8 @@
 
       async function searchOrder() {
         const keyword = $("#searchInput").val().trim();
-        console.log("Tìm kiếm với keyword:", keyword);
 
         if (!keyword) {
-          console.log("Không có keyword, áp dụng bộ lọc mặc định");
           applyFilters();
           return;
         }
@@ -752,10 +737,8 @@
           const query = new URLSearchParams({ keyword });
           if (currentDateFilter) {
             query.append("date", currentDateFilter);
-            console.log(`Thêm date filter: ${currentDateFilter}`);
           }
 
-          console.log(`Gọi API /orders/search-by-id với keyword: ${keyword}`);
           const res = await fetch(`/orders/search-by-id?${query.toString()}`);
           const data = await res.json();
           if (!res.ok) {
@@ -763,7 +746,6 @@
               `Không tìm thấy đơn hàng khớp với mã này. Vui lòng kiểm tra lại.`
             );
           }
-          console.log("Dữ liệu đơn hàng trả về:", data);
           if (data.orders && data.orders.length > 0) {
             renderOrders(data.orders);
             $("#pagination").hide();
@@ -785,7 +767,6 @@
           dateValue && moment(dateValue, "YYYY-MM-DD", true).isValid()
             ? dateValue
             : null;
-        console.log("Áp dụng bộ lọc ngày:", currentDateFilter);
         currentPage = 1;
         applyFilters();
         fetchOverdueOrders();
@@ -823,10 +804,6 @@
             query.append("wards", selectedWards.join(","));
           }
 
-          console.log(
-            "Gọi API /orders/filter-advanced với query:",
-            query.toString()
-          );
           const res = await fetch(
             `/orders/filter-advanced?${query.toString()}`
           );
@@ -839,7 +816,6 @@
             );
           }
           const data = await res.json();
-          console.log("Dữ liệu lọc nâng cao:", data);
           renderOrders(data.orders || []);
           $("#pagination").hide();
         } catch (err) {
@@ -860,7 +836,6 @@
         $("#wardSelect").val(null).trigger("change");
         currentDateFilter = null;
         currentPage = 1;
-        console.log("Reset bộ lọc");
         applyFilters();
         fetchOverdueOrders();
       }
