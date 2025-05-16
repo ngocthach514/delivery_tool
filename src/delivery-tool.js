@@ -44,7 +44,7 @@ const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
 const DEFAULT_ADDRESS = {
   DcGiaohang: process.env.DEFAULT_ADDRESS,
   District: "Quận Tân Bình",
-  Ward: "Phường 4",
+  Ward: "Phường 1",
   Source: "Default",
   Distance: 0,
   TravelTime: 0,
@@ -967,7 +967,7 @@ async function updateStandardizedAddresses(data) {
   }
 }
 
-async function groupOrders(page = 1, day = "today") {
+async function groupOrders(page = 1, filterDate = null) {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
@@ -979,15 +979,17 @@ async function groupOrders(page = 1, day = "today") {
     }
 
     let dateCondition = "";
-    if (day === "today") {
-      dateCondition = "DATE(oa.created_at) = CURDATE()";
-    } else if (day === "yesterday") {
-      dateCondition = "DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY";
-    } else if (day === "older") {
-      dateCondition = "DATE(oa.created_at) < CURDATE() - INTERVAL 1 DAY";
-    } else {
-      throw new Error("Tham số 'day' không hợp lệ");
+    let queryParams = [];
+
+    if (filterDate) {
+      if (!moment(filterDate, "YYYY-MM-DD", true).isValid()) {
+        throw new Error("Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD");
+      }
+      dateCondition = "DATE(oa.created_at) = ?";
+      queryParams.push(filterDate);
     }
+
+    const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
 
     const [totalResult] = await connection.execute(
       `
@@ -995,11 +997,10 @@ async function groupOrders(page = 1, day = "today") {
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
-        AND oa.distance IS NOT NULL 
-        AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND ${dateCondition}
-      `
+        ${dateCondition}
+      `,
+      queryParams
     );
 
     const totalOrders = totalResult[0].total;
@@ -1019,30 +1020,40 @@ async function groupOrders(page = 1, day = "today") {
         o.SOKM,
         o.priority,
         o.delivery_deadline,
-        o.delivery_note
+        o.delivery_note,
+        CASE 
+          WHEN DATE(oa.created_at) <= CURDATE() - INTERVAL 2 DAY THEN 2
+          WHEN DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY THEN 1 
+          ELSE 0 
+        END AS days_old
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
-        AND oa.distance IS NOT NULL 
-        AND oa.distance > 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND ${dateCondition}
+        ${dateCondition}
       ORDER BY
         CASE
-          WHEN oa.status = 1 AND o.priority = 2 THEN 1
-          WHEN oa.status = 0 AND o.priority = 2 THEN 2
+          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
+          WHEN o.priority = 2 THEN 0
           WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
+          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
+          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
                AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
-          WHEN oa.status = 1 AND o.priority = 0 THEN 4
+          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
+          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
+          WHEN oa.status = 1 AND o.priority = 0 THEN 10
           WHEN oa.status = 1 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 5
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
           WHEN oa.status = 0 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 6
-          WHEN oa.status = 0 AND o.priority = 0 THEN 7
-          WHEN oa.status = 0 AND o.priority = 1 
-               AND o.delivery_deadline IS NOT NULL 
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 8
-          ELSE 9
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
+          WHEN oa.status = 0 AND o.priority = 0 THEN 13
+          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
+          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
+          ELSE 16
         END ASC,
         CASE 
           WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
@@ -1052,13 +1063,13 @@ async function groupOrders(page = 1, day = "today") {
           WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
           ELSE 999999
         END ASC,
-        oa.distance ASC,
-        oa.travel_time ASC,
+        COALESCE(oa.distance, 999999) ASC,
+        COALESCE(oa.travel_time, 999999) ASC,
         oa.created_at ASC
       LIMIT ${pageSize} OFFSET ${offset}
     `;
 
-    const [results] = await connection.execute(query);
+    const [results] = await connection.execute(query, queryParams);
 
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
@@ -1082,6 +1093,7 @@ async function groupOrders(page = 1, day = "today") {
       delivery_note: row.delivery_note,
       district: row.district || null,
       ward: row.ward || null,
+      days_old: row.days_old,
     }));
 
     await connection.end();
@@ -1631,12 +1643,12 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    console.log("📦 Bước 3: Lấy và lưu đơn hàng...");
-    const orders = await fetchAndSaveOrders();
-    console.log(`✅ Đã lưu đơn hàng: ${orders.length}`);
-    console.log(
-      "================================================================="
-    );
+    // console.log("📦 Bước 3: Lấy và lưu đơn hàng...");
+    // const orders = await fetchAndSaveOrders();
+    // console.log(`✅ Đã lưu đơn hàng: ${orders.length}`);
+    // console.log(
+    //   "================================================================="
+    // );
 
     console.log("📝 Bước 4: Phân tích ghi chú đơn hàng...");
     await analyzeDeliveryNote();
@@ -1645,35 +1657,35 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    if (orders.length === 0) {
-      console.log(
-        "ℹ️ Không có đơn hàng mới, lấy danh sách đơn hàng hiện có..."
-      );
-      const groupedOrders = await groupOrders(page);
-      console.log(
-        "📊 Kết quả đơn hàng:",
-        JSON.stringify(groupedOrders, null, 2)
-      );
-      console.log("🏁 Công cụ giao hàng hoàn tất.");
-      console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
-      return groupedOrders;
-    }
+    // if (orders.length === 0) {
+    //   console.log(
+    //     "ℹ️ Không có đơn hàng mới, lấy danh sách đơn hàng hiện có..."
+    //   );
+    //   const groupedOrders = await groupOrders(page);
+    //   console.log(
+    //     "📊 Kết quả đơn hàng:",
+    //     JSON.stringify(groupedOrders, null, 2)
+    //   );
+    //   console.log("🏁 Công cụ giao hàng hoàn tất.");
+    //   console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
+    //   return groupedOrders;
+    // }
 
-    console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
-    const standardizedOrders = await standardizeAddresses(orders);
-    console.log(
-      `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
-    );
-    console.log(
-      "================================================================="
-    );
+    // console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
+    // const standardizedOrders = await standardizeAddresses(orders);
+    // console.log(
+    //   `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
+    // );
+    // console.log(
+    //   "================================================================="
+    // );
 
-    console.log("💾 Bước 6: Cập nhật địa chỉ chuẩn hóa...");
-    await updateStandardizedAddresses(standardizedOrders);
-    console.log("✅ Đã cập nhật địa chỉ chuẩn hóa");
-    console.log(
-      "================================================================="
-    );
+    // console.log("💾 Bước 6: Cập nhật địa chỉ chuẩn hóa...");
+    // await updateStandardizedAddresses(standardizedOrders);
+    // console.log("✅ Đã cập nhật địa chỉ chuẩn hóa");
+    // console.log(
+    //   "================================================================="
+    // );
 
     console.log("📏 Bước 7: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
@@ -1684,7 +1696,6 @@ async function main(page = 1, io) {
 
     console.log(`🔍 Bước 8: Lấy đơn hàng gần nhất (trang ${page})...`);
     const groupedOrders = await groupOrders(page);
-    console.log("📊 Kết quả đơn hàng:", JSON.stringify(groupedOrders, null, 2));
     console.log(
       "================================================================="
     );
@@ -1730,14 +1741,16 @@ app.get("/grouped-orders", async (req, res) => {
   try {
     console.time("grouped-orders");
     const page = parseInt(req.query.page) || 1;
-    const day = req.query.day || "today";
+    const filterDate = req.query.date || null;
 
     if (isNaN(page) || page < 1) {
       return res.status(400).json({ error: "Page phải là số nguyên dương" });
     }
 
-    console.log(`Gọi groupOrders với page: ${page}, day: ${day}`);
-    const groupedOrders = await groupOrders(page, day);
+    console.log(
+      `Gọi groupOrders với page: ${page}, date: ${filterDate || "all"}`
+    );
+    const groupedOrders = await groupOrders(page, filterDate);
 
     console.timeEnd("grouped-orders");
     res.status(200).json(groupedOrders);
@@ -1786,7 +1799,7 @@ app.get("/locations", async (req, res) => {
 });
 
 app.get("/orders/search", async (req, res) => {
-  const { day = "today", keyword = "", type = "district" } = req.query;
+  const { date = null, keyword = "", type = "district" } = req.query;
 
   if (!keyword.trim()) {
     return res.status(400).json({ error: "Thiếu giá trị để tìm kiếm." });
@@ -1799,11 +1812,17 @@ app.get("/orders/search", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
 
-    let dateCondition = "DATE(o.created_at) = CURDATE()";
-    if (day === "yesterday") {
-      dateCondition = "DATE(o.created_at) = CURDATE() - INTERVAL 1 DAY";
-    } else if (day === "older") {
-      dateCondition = "DATE(o.created_at) < CURDATE() - INTERVAL 1 DAY";
+    let dateCondition = "";
+    const values = [keyword];
+
+    if (date) {
+      if (!moment(date, "YYYY-MM-DD", true).isValid()) {
+        return res
+          .status(400)
+          .json({ error: "Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD" });
+      }
+      dateCondition = "AND DATE(o.created_at) = ?";
+      values.unshift(date);
     }
 
     const field = type === "district" ? "a.district" : "a.ward";
@@ -1813,11 +1832,11 @@ app.get("/orders/search", async (req, res) => {
       SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
-      WHERE ${dateCondition}
-        AND ${field} = ?
+      WHERE ${field} = ?
+        ${dateCondition}
       ORDER BY o.created_at DESC
       `,
-      [keyword]
+      values
     );
 
     await connection.end();
@@ -1867,7 +1886,7 @@ app.get("/orders/filter", async (req, res) => {
 });
 
 app.get("/orders/filter-advanced", async (req, res) => {
-  const { day = "today", districts = "", wards = "" } = req.query;
+  const { date = null, districts = "", wards = "" } = req.query;
 
   const districtList = districts
     ? districts.split(",").map((d) => d.trim())
@@ -1881,16 +1900,20 @@ app.get("/orders/filter-advanced", async (req, res) => {
   try {
     const connection = await mysql.createConnection(dbConfig);
 
-    let dateCondition = "DATE(a.created_at) = CURDATE()";
-    if (day === "yesterday") {
-      dateCondition = "DATE(a.created_at) = CURDATE() - INTERVAL 1 DAY";
-    } else if (day === "older") {
-      dateCondition = "DATE(a.created_at) < CURDATE() - INTERVAL 1 DAY";
-    }
-
-    const filters = [dateCondition];
+    let dateCondition = "";
     const values = [];
 
+    if (date) {
+      if (!moment(date, "YYYY-MM-DD", true).isValid()) {
+        return res
+          .status(400)
+          .json({ error: "Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD" });
+      }
+      dateCondition = "DATE(a.created_at) = ?";
+      values.push(date);
+    }
+
+    const filters = dateCondition ? [dateCondition] : [];
     if (districtList.length > 0) {
       filters.push(`a.district IN (${districtList.map(() => "?").join(",")})`);
       values.push(...districtList);
@@ -1901,7 +1924,7 @@ app.get("/orders/filter-advanced", async (req, res) => {
       values.push(...wardList);
     }
 
-    const whereClause = filters.join(" AND ");
+    const whereClause = filters.join(" AND ") || "1=1";
 
     const [rows] = await connection.query(
       `
@@ -1928,6 +1951,262 @@ app.get("/orders/filter-advanced", async (req, res) => {
   }
 });
 
+app.get("/orders/filter-by-date", async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { page = 1, filterDate } = req.query;
+    const pageNum = parseInt(page);
+
+    if (!Number.isInteger(pageNum) || pageNum < 1) {
+      return res.status(400).json({ error: "Page phải là số nguyên dương" });
+    }
+
+    if (filterDate && !moment(filterDate, "YYYY-MM-DD", true).isValid()) {
+      return res
+        .status(400)
+        .json({ error: "filterDate phải có định dạng YYYY-MM-DD" });
+    }
+
+    console.log(`API received: page=${page}, filterDate=${filterDate || "all"}`);
+
+    const connection = await mysql.createConnection(dbConfig);
+    const pageSize = 10;
+    const offset = (pageNum - 1) * pageSize;
+
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        ${filterDate ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?" : ""}
+    `;
+    const countParams = filterDate ? [filterDate] : [];
+    const [totalResult] = await connection.execute(countQuery, countParams);
+
+    const totalOrders = totalResult[0].total;
+    console.log(`Tổng số đơn hàng: ${totalOrders}`);
+    const totalPages = Math.ceil(totalOrders / pageSize);
+
+    const query = `
+      SELECT 
+        oa.id_order,
+        oa.address,
+        oa.source,
+        oa.distance,
+        oa.travel_time,
+        oa.status,
+        oa.district,
+        oa.ward,
+        o.created_at,
+        o.SOKM,
+        o.priority,
+        o.delivery_deadline,
+        o.delivery_note,
+        CASE 
+          WHEN DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) <= CURDATE() - INTERVAL 2 DAY THEN 2
+          WHEN DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = CURDATE() - INTERVAL 1 DAY THEN 1 
+          ELSE 0 
+        END AS days_old
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        ${filterDate ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?" : ""}
+      ORDER BY
+        CASE
+          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
+          WHEN o.priority = 2 THEN 0
+          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
+          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
+          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
+          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
+          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
+          WHEN oa.status = 1 AND o.priority = 0 THEN 10
+          WHEN oa.status = 1 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
+          WHEN oa.status = 0 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
+          WHEN oa.status = 0 AND o.priority = 0 THEN 13
+          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
+          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
+          ELSE 16
+        END ASC,
+        CASE 
+          WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
+          ELSE 1
+        END ASC,
+        CASE 
+          WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
+          ELSE 999999
+        END ASC,
+        COALESCE(oa.distance, 999999) ASC,
+        COALESCE(oa.travel_time, 999999) ASC,
+        o.created_at ASC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
+    const queryParams = filterDate ? [filterDate] : [];
+    const [results] = await connection.execute(query, queryParams);
+    console.log(`Số đơn trả về: ${results.length}`);
+
+    const parsedResults = results.map((row) => ({
+      id_order: row.id_order,
+      address: row.address,
+      source: row.source,
+      distance: row.distance,
+      travel_time: row.travel_time,
+      status: row.status,
+      created_at: row.created_at
+        ? moment(row.created_at)
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      SOKM: row.SOKM,
+      priority: row.priority,
+      delivery_deadline: row.delivery_deadline
+        ? moment(row.delivery_deadline)
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      delivery_note: row.delivery_note,
+      district: row.district || null,
+      ward: row.ward || null,
+      days_old: row.days_old,
+    }));
+
+    await connection.end();
+
+    res.json({
+      totalOrders,
+      totalPages,
+      currentPage: pageNum,
+      lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
+      orders: parsedResults,
+    });
+  } catch (error) {
+    console.error("API error:", error.message, error.stack);
+    res.status(500).json({ error: `Không thể lọc đơn hàng: ${error.message}` });
+  }
+});
+
+app.get("/orders/search-by-id", async (req, res) => {
+  const { keyword = "", date = null } = req.query;
+
+  if (!keyword.trim()) {
+    return res.status(400).json({ error: "Thiếu mã đơn hàng để tìm kiếm." });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    let dateCondition = "";
+    const values = [`%${keyword}%`];
+
+    if (date) {
+      if (!moment(date, "YYYY-MM-DD", true).isValid()) {
+        return res
+          .status(400)
+          .json({ error: "Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD" });
+      }
+      dateCondition = "AND DATE(o.created_at) = ?";
+      values.push(date);
+    }
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE o.id_order LIKE ?
+        ${dateCondition}
+      ORDER BY o.created_at DESC
+      `,
+      values
+    );
+
+    await connection.end();
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi khi tìm kiếm đơn hàng:", err.message);
+    res.status(500).json({ error: "Lỗi server khi tìm kiếm đơn hàng." });
+  }
+});
+
+app.get("/orders/overdue", async (req, res) => {
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE a.status = 1
+      ORDER BY o.created_at DESC
+      `
+    );
+
+    await connection.end();
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi khi lấy đơn hàng quá hạn:", err.message);
+    res.status(500).json({ error: "Lỗi server khi lấy đơn hàng quá hạn." });
+  }
+});
+
+app.get("/orders/find-by-id", async (req, res) => {
+  const { id = "", date = null } = req.query;
+
+  if (!id.trim()) {
+    return res.status(400).json({ error: "Thiếu mã đơn hàng để tìm kiếm." });
+  }
+
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+
+    let dateCondition = "";
+    const values = [id];
+
+    if (date) {
+      if (!moment(date, "YYYY-MM-DD", true).isValid()) {
+        return res
+          .status(400)
+          .json({ error: "Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD" });
+      }
+      dateCondition = "AND DATE(o.created_at) = ?";
+      values.push(date);
+    }
+
+    const [rows] = await connection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE o.id_order = ?
+        ${dateCondition}
+      ORDER BY o.created_at DESC
+      LIMIT 1
+      `,
+      values
+    );
+
+    await connection.end();
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Không tìm thấy đơn hàng." });
+    }
+
+    res.json({ order: rows[0] });
+  } catch (err) {
+    console.error("Lỗi khi tìm kiếm đơn hàng:", err.message);
+    res.status(500).json({ error: "Lỗi server khi tìm kiếm đơn hàng." });
+  }
+});
 server.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });

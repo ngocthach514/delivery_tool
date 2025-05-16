@@ -4,10 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Danh sách đơn hàng</title>
-
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
       rel="stylesheet"
+      integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
+      crossorigin="anonymous"
     />
     <link
       href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css"
@@ -15,7 +16,13 @@
     />
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
 
     <style>
@@ -88,80 +95,171 @@
         background-color: #ccc;
         cursor: not-allowed;
       }
-      /* Kiểu cho container danh sách thông báo */
-      .notification-container {
+      .notification-bell {
         position: fixed;
         top: 20px;
         right: 20px;
-        max-width: 300px;
         z-index: 2000;
-        display: none;
+        cursor: pointer;
       }
-      .notification-blink {
+      .notification-bell .badge {
+        position: absolute;
+        top: -5px;
+        right: -5px;
         background-color: #ff0000;
         color: white;
-        font-weight: bold;
-        padding: 10px 15px;
-        margin-bottom: 10px;
-        border-radius: 5px;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-        animation: blink 1s infinite;
-        list-style: none;
+        font-size: 10px;
+        padding: 2px 6px;
+        border-radius: 50%;
       }
-      @keyframes blink {
-        0% {
-          opacity: 1;
-        }
-        50% {
-          opacity: 0.3;
-        }
-        100% {
-          opacity: 1;
-        }
+      .notification-dropdown {
+        position: absolute;
+        top: 40px;
+        right: 0;
+        width: 300px;
+        max-height: 400px;
+        overflow-y: auto;
+        background-color: white;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        display: none;
+        z-index: 2000;
+      }
+      .notification-dropdown.show {
+        display: block;
+      }
+      .notification-item {
+        padding: 10px;
+        border-bottom: 1px solid #eee;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .notification-item:last-child {
+        border-bottom: none;
+      }
+      .notification-item:hover {
+        background-color: #f8f8f8;
+      }
+      .notification-item-text {
+        color: red;
+      }
+      .notification-item.unviewed {
+        font-weight: bold;
+        background-color: #ffe6e6;
+      }
+      .notification-item.viewed {
+        font-weight: normal;
+        background-color: #ffffff;
+      }
+      .filter-container {
+        display: flex;
+        justify-content: center;
+        gap: 15px;
+        margin-bottom: 20px;
+      }
+      #loading {
+        display: none;
+      }
+      #loading.show {
+        display: block;
+      }
+      .spinner-border {
+        width: 1.5rem;
+        height: 1.5rem;
+      }
+      .reset-filter {
+        padding: 8px 12px;
+        background-color: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .reset-filter:hover {
+        background-color: #c82333;
+      }
+      .mark-all-read {
+        padding: 8px;
+        background-color: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        text-align: center;
+        margin: 5px;
+        font-size: 12px;
+      }
+      .mark-all-read:hover {
+        background-color: #45a049;
       }
     </style>
   </head>
 
   <body>
     <div class="container">
-      <ul class="nav nav-tabs mb-3" id="orderTabs">
-        <li class="nav-item">
-          <button class="nav-link active" data-bs-toggle="tab" data-day="today">
-            Hôm nay
-          </button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link" data-bs-toggle="tab" data-day="yesterday">
-            Hôm qua
-          </button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link" data-bs-toggle="tab" data-day="older">
-            Trước nữa
-          </button>
-        </li>
-      </ul>
       <h1>Danh sách đơn hàng</h1>
 
-      <div class="d-flex justify-content-center mb-3">
+      <div class="filter-container">
         <input
           type="text"
           id="searchInput"
-          class="form-control w-50"
+          class="form-control"
           placeholder="Tìm theo mã đơn hàng..."
+          style="width: 25%"
           oninput="debouncedSearch()"
         />
+        <input
+          type="date"
+          id="dateFilter"
+          class="form-control"
+          style="width: 15%"
+          onchange="applyDateFilter()"
+        />
+        <select
+          id="districtSelect"
+          class="form-select"
+          multiple
+          style="width: 25%"
+        ></select>
+        <select
+          id="wardSelect"
+          class="form-select"
+          multiple
+          style="width: 25%"
+        ></select>
+        <button class="reset-filter" onclick="resetFilters()">
+          Xóa bộ lọc
+        </button>
       </div>
 
-      <div class="d-flex justify-content-center mb-4 gap-3">
-        <select id="districtSelect" class="form-select w-25" multiple></select>
-        <select id="wardSelect" class="form-select w-25" multiple></select>
+      <div class="notification-bell" id="notification-bell">
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#000"
+          stroke-width="2"
+        >
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+        </svg>
+        <span class="badge" id="notification-count">0</span>
+        <div class="notification-dropdown" id="notification-dropdown">
+          <button class="mark-all-read" onclick="markAllNotificationsRead()">
+            Đánh dấu tất cả đã đọc
+          </button>
+          <div id="notification-list"></div>
+        </div>
       </div>
 
-      <div id="notification-container" class="notification-container">
-        <ul id="notification-list"></ul>
+      <div id="loading" class="text-center mb-2">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Đang tải...</span>
+        </div>
+        Đang tải dữ liệu...
       </div>
-      <div id="loading" class="text-center mb-2">Đang tải dữ liệu...</div>
       <div
         id="error"
         class="text-danger text-center mb-2"
@@ -173,72 +271,279 @@
     </div>
 
     <script>
-      const apiUrl = "/grouped-orders";
-      let currentDay = "today";
+      let apiUrl = "/grouped-orders";
       let currentPage = 1;
       let totalPages = 1;
       let allOrders = [];
       let locationLoaded = false;
       let districtWardMap = {};
+      let currentDateFilter = null;
+      let viewedNotifications =
+        JSON.parse(localStorage.getItem("viewedNotifications")) || [];
 
-      fetchOrders(currentDay, 1);
+      function saveViewedNotifications() {
+        localStorage.setItem(
+          "viewedNotifications",
+          JSON.stringify(viewedNotifications)
+        );
+        console.log("Đã lưu viewedNotifications:", viewedNotifications);
+      }
+
+      async function loadLocations() {
+        try {
+          console.log("Đang tải danh sách quận/phường...");
+          const locationRes = await fetch("/locations");
+          if (!locationRes.ok) {
+            throw new Error(
+              `HTTP ${locationRes.status}: Không lấy được danh sách quận/phường`
+            );
+          }
+          const locationData = await locationRes.json();
+          console.log("Dữ liệu quận/phường:", locationData);
+          initSelectFilters(locationData);
+          locationLoaded = true;
+        } catch (err) {
+          console.error("Lỗi khi tải locations:", err.message);
+          $("#error")
+            .text("Lỗi khi tải danh sách quận/phường: " + err.message)
+            .show();
+        }
+      }
+
+      async function fetchOverdueOrders() {
+        try {
+          console.log("Đang gọi API /orders/overdue...");
+          const res = await fetch("/orders/overdue");
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(
+              `Không thể tải đơn hàng quá hạn: ${
+                errorData.error || "Lỗi server không xác định"
+              }`
+            );
+          }
+          const data = await res.json();
+          console.log("Dữ liệu đơn hàng quá hạn:", data.orders);
+          renderNotifications(data.orders || []);
+        } catch (err) {
+          console.error("Lỗi khi tải đơn hàng quá hạn:", err.message);
+          $("#error")
+            .text("Lỗi khi tải đơn hàng quá hạn: " + err.message)
+            .show();
+        }
+      }
+
+      loadLocations();
+      fetchOrders(currentPage);
+      fetchOverdueOrders();
 
       const socket = io();
-      socket.on("connect", () => console.log("Connected"));
+      socket.on("connect", () => console.log("Đã kết nối Socket.IO"));
+      socket.on("connect_error", (err) => {
+        console.error("Lỗi kết nối Socket.IO:", err.message);
+        $("#error")
+          .text("Lỗi kết nối thời gian thực: " + err.message)
+          .show();
+      });
       socket.on("statusUpdated", (data) => {
         $("#notification-list").append(
-          `<li class="text-success">${data.message} (${data.updatedCount} đơn hàng)</li>`
+          `<div class="notification-item text-success">${data.message} (${data.updatedCount} đơn hàng)</div>`
         );
-        $("#notification-container").fadeIn();
+        updateNotificationCount();
+        $("#notification-dropdown").addClass("show");
         setTimeout(() => {
           $("#notification-list .text-success").remove();
+          updateNotificationCount();
           if ($("#notification-list").children().length === 0) {
-            $("#notification-container").fadeOut();
+            $("#notification-dropdown").removeClass("show");
           }
         }, 3000);
-        fetchOrders(currentDay, currentPage);
+        fetchOrders(currentPage);
+        fetchOverdueOrders();
       });
 
-      document.querySelectorAll("#orderTabs .nav-link").forEach((tab) => {
-        tab.addEventListener("click", () => {
-          document
-            .querySelectorAll("#orderTabs .nav-link")
-            .forEach((t) => t.classList.remove("active"));
-          tab.classList.add("active");
-          currentDay = tab.getAttribute("data-day");
-          fetchOrders(currentDay, 1);
-        });
+      $("#notification-bell").on("click", function () {
+        console.log("Click vào chuông thông báo");
+        $("#notification-dropdown").toggleClass("show");
       });
 
-      async function fetchOrders(day = "today", page = 1) {
+      $(document).on("click", function (event) {
+        if (
+          !$(event.target).closest("#notification-bell, #notification-dropdown")
+            .length
+        ) {
+          $("#notification-dropdown").removeClass("show");
+        }
+      });
+
+      $(document).on(
+        "click",
+        ".notification-item[data-order-id]",
+        function (e) {
+          e.preventDefault();
+          const orderId = $(this).attr("data-order-id");
+          console.log("Click vào thông báo với orderId:", orderId);
+          if (orderId) {
+            findOrderById(orderId);
+          } else {
+            console.error("Không tìm thấy data-order-id trên thông báo");
+          }
+        }
+      );
+
+      function markAllNotificationsRead() {
+        console.log("Đánh dấu tất cả thông báo đã đọc");
+        $("#notification-list .notification-item[data-order-id]").each(
+          function () {
+            const orderId = $(this).attr("data-order-id");
+            if (orderId && !viewedNotifications.includes(orderId)) {
+              viewedNotifications.push(orderId);
+            }
+          }
+        );
+        saveViewedNotifications();
+        fetchOverdueOrders();
+      }
+
+      function updateNotificationCount(overdueOrders) {
+        const count = overdueOrders
+          ? overdueOrders.filter(
+              (o) => !viewedNotifications.includes(o.id_order)
+            ).length
+          : $("#notification-list .notification-item[data-order-id]").filter(
+              function () {
+                return !viewedNotifications.includes(
+                  $(this).attr("data-order-id")
+                );
+              }
+            ).length;
+        $("#notification-count").text(count);
+        console.log("Số lượng thông báo chưa xem:", count);
+      }
+
+      function renderNotifications(overdueOrders) {
+        const notificationList = $("#notification-list");
+        notificationList.empty();
+
+        if (overdueOrders.length > 0) {
+          overdueOrders.sort((a, b) => {
+            const aViewed = viewedNotifications.includes(a.id_order);
+            const bViewed = viewedNotifications.includes(b.id_order);
+            if (aViewed && !bViewed) return 1;
+            if (!aViewed && bViewed) return -1;
+            return 0;
+          });
+
+          overdueOrders.forEach((o) => {
+            const createdAt = moment(o.created_at)
+              .tz("Asia/Ho_Chi_Minh")
+              .format("DD/MM/YYYY HH:mm:ss");
+            const isViewed = viewedNotifications.includes(o.id_order);
+            console.log(
+              `Render thông báo cho orderId: ${o.id_order}, viewed: ${isViewed}`
+            );
+            notificationList.append(
+              `<div class="notification-item ${
+                isViewed ? "viewed" : "unviewed"
+              }" data-order-id="${o.id_order}">
+                <strong class="notification-item-text">CẢNH BÁO:</strong> Đơn hàng 
+                <strong class="notification-item-text">${
+                  o.id_order
+                }</strong> chưa được giao sau 15 phút (Tạo: ${createdAt})
+              </div>`
+            );
+          });
+        } else {
+          notificationList.append(
+            `<div class="notification-item">Không có đơn hàng quá hạn.</div>`
+          );
+        }
+        updateNotificationCount(overdueOrders);
+      }
+
+      async function findOrderById(orderId) {
         try {
-          $("#loading").show();
+          console.log(`Gọi API /orders/find-by-id với id: ${orderId}`);
+          $("#loading").addClass("show");
           $("#error").hide();
 
-          const res = await fetch(`${apiUrl}?day=${day}&page=${page}`);
-          if (!res.ok) throw new Error("Không thể lấy dữ liệu từ API.");
+          const query = new URLSearchParams({ id: orderId });
+          if (currentDateFilter) {
+            query.append("date", currentDateFilter);
+            console.log(`Thêm date filter: ${currentDateFilter}`);
+          }
+
+          const res = await fetch(`/orders/find-by-id?${query.toString()}`);
           const data = await res.json();
+          if (!res.ok) {
+            throw new Error(
+              `Không tìm thấy đơn hàng với mã này. Vui lòng kiểm tra lại.`
+            );
+          }
+          console.log("Dữ liệu đơn hàng trả về:", data);
+          if (data.order) {
+            renderOrders([data.order]);
+            $("#pagination").hide();
+
+            if (!viewedNotifications.includes(orderId)) {
+              viewedNotifications.push(orderId);
+              saveViewedNotifications();
+              fetchOverdueOrders();
+            }
+          } else {
+            throw new Error("Không tìm thấy đơn hàng với mã này.");
+          }
+        } catch (err) {
+          console.error("Lỗi khi tìm mã đơn hàng:", err.message);
+          $("#error")
+            .text("Không tìm thấy đơn hàng với mã này. Vui lòng kiểm tra lại.")
+            .show();
+          $("#orders-wrapper").html("");
+        } finally {
+          $("#loading").removeClass("show");
+        }
+      }
+
+      async function fetchOrders(page = 1) {
+        try {
+          console.log(`Gọi API ${apiUrl} với page: ${page}`);
+          $("#loading").addClass("show");
+          $("#error").hide();
+
+          apiUrl = currentDateFilter
+            ? "/orders/filter-by-date"
+            : "/grouped-orders";
+          const query = new URLSearchParams({ page });
+          if (currentDateFilter) {
+            query.append("filterDate", currentDateFilter);
+          }
+
+          const res = await fetch(`${apiUrl}?${query.toString()}`);
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(
+              `Không thể tải đơn hàng: ${
+                errorData.error || "Lỗi server không xác định"
+              }`
+            );
+          }
+          const data = await res.json();
+          console.log("Dữ liệu đơn hàng:", data);
 
           totalPages = data.totalPages || 1;
           currentPage = data.currentPage || 1;
-          allOrders = data.orders;
+          allOrders = data.orders || [];
           renderOrders(data.orders);
           renderPagination();
-
-          if (!locationLoaded) {
-            const locationRes = await fetch("/locations");
-            if (!locationRes.ok)
-              throw new Error("Không lấy được danh sách quận/phường.");
-            const locationData = await locationRes.json();
-            initSelectFilters(locationData);
-            locationLoaded = true;
-          }
         } catch (err) {
+          console.error("Lỗi trong fetchOrders:", err.message);
           $("#error")
-            .text("Lỗi: " + err.message)
+            .text("Lỗi khi tải đơn hàng: " + err.message)
             .show();
+          $("#orders-wrapper").html("");
+          $("#pagination").hide();
         } finally {
-          $("#loading").hide();
+          $("#loading").removeClass("show");
         }
       }
 
@@ -258,42 +563,47 @@
         });
 
         const uniqueDistricts = [
-          ...new Set(data.mapping.map((d) => d.district)),
-        ];
+          ...new Set(data.mapping?.map((d) => d.district) || []),
+        ].filter(Boolean);
         districtSelect.html(
           uniqueDistricts.map((d) => `<option value="${d}">${d}</option>`)
         );
 
-        const allWards = [...new Set(data.mapping.map((d) => d.ward))];
+        const allWards = [
+          ...new Set(data.mapping?.map((d) => d.ward) || []),
+        ].filter(Boolean);
         wardSelect.html(
           allWards.map((w) => `<option value="${w}">${w}</option>`)
         );
 
         districtSelect.select2({
           placeholder: "Chọn Quận/Huyện",
-          multiple: true,
+          allowClear: true,
         });
-        wardSelect.select2({ placeholder: "Chọn Phường/Xã", multiple: true });
+        wardSelect.select2({
+          placeholder: "Chọn Phường/Xã",
+          allowClear: true,
+        });
 
         districtSelect.on("change", () => {
-          const selectedDistricts = districtSelect.val();
-
+          const selectedDistricts = districtSelect.val() || [];
           if (selectedDistricts.length === 0) {
-            const allWards = [...new Set(data.mapping.map((d) => d.ward))];
+            const allWards = [
+              ...new Set(data.mapping?.map((d) => d.ward) || []),
+            ].filter(Boolean);
             wardSelect.html(
               allWards.map((w) => `<option value="${w}">${w}</option>`)
             );
           } else {
-            const filteredWards = selectedDistricts.flatMap(
-              (d) => districtWardMap[d] || []
-            );
+            const filteredWards = selectedDistricts
+              .flatMap((d) => districtWardMap[d] || [])
+              .filter(Boolean);
             const uniqueWards = [...new Set(filteredWards)];
             wardSelect.html(
               uniqueWards.map((w) => `<option value="${w}">${w}</option>`)
             );
           }
-
-          wardSelect.trigger("change");
+          wardSelect.val(null).trigger("change");
           applyFilters();
         });
 
@@ -301,71 +611,85 @@
       }
 
       function renderOrders(orders) {
+        console.log("Đang render đơn hàng:", orders);
         const wrapper = document.getElementById("orders-wrapper");
         wrapper.innerHTML = "";
-        const now = new Date();
+        if (!orders || orders.length === 0) {
+          wrapper.innerHTML =
+            "<p class='text-center'>Không có đơn hàng nào cho bộ lọc đã chọn.</p>";
+          return;
+        }
+
+        const now = moment().tz("Asia/Ho_Chi_Minh").toDate();
         const table = document.createElement("table");
         table.className = "table table-bordered";
         table.innerHTML = `
-        <thead>
-          <tr>
-            <th>Mã đơn</th><th>Địa chỉ</th><th>Khoảng cách quy định</th>
-            <th>Khoảng cách thực</th><th>Thời gian di chuyển</th>
-            <th>Ưu tiên</th><th>Thời gian tạo</th><th>Giao theo yêu cầu</th><th>Ghi chú</th>
-          </tr>
-        </thead><tbody></tbody>`;
+          <thead>
+            <tr>
+              <th>Mã đơn</th>
+              <th>Địa chỉ</th>
+              <th>Khoảng cách quy định</th>
+              <th>Khoảng cách thực</th>
+              <th>Thời gian di chuyển</th>
+              <th>Ưu tiên</th>
+              <th>Thời gian tạo</th>
+              <th>Giao theo yêu cầu</th>
+              <th>Ghi chú</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        `;
         const tbody = table.querySelector("tbody");
 
-        // Tạo danh sách thông báo cho đơn hàng quá hạn
-        const notificationList = $("#notification-list");
-        notificationList.empty(); // Xóa danh sách cũ
-
-        const overdueOrders = orders.filter((o) => {
-          const createdAt = new Date(o.address_created_at || o.created_at);
-          const timeSinceCreated = (now - createdAt) / (1000 * 60); // Thời gian tính bằng phút
-          return timeSinceCreated > 15; // Quá 15 phút
-        });
-
-        if (overdueOrders.length > 0) {
-          overdueOrders.forEach((o) => {
-            notificationList.append(
-              `<li class="notification-blink">CẢNH BÁO: Đơn hàng ${o.id_order} đã quá 15 phút!</li>`
-            );
-          });
-          $("#notification-container").fadeIn();
-          setTimeout(() => {
-            notificationList.empty();
-            $("#notification-container").fadeOut();
-          }, 30000); // Ẩn sau 30 giây
-        }
-
         orders.forEach((o) => {
-          const deadline = new Date(o.delivery_deadline);
-          const timeToDeadline = (deadline - now) / (1000 * 60);
+          const deadline = o.delivery_deadline
+            ? moment(o.delivery_deadline).tz("Asia/Ho_Chi_Minh").toDate()
+            : null;
+          const timeToDeadline = deadline
+            ? (deadline - now) / (1000 * 60)
+            : null;
           let [priorityText, priorityClass] = [
             "Bình thường",
             "priority-normal",
           ];
-          if (o.priority === 2)
+          if (o.priority === 2) {
             [priorityText, priorityClass] = ["Khẩn cấp", "priority-urgent"];
-          else if (o.priority === 1)
+          } else if (o.priority === 1) {
             [priorityText, priorityClass] = ["Ưu tiên cao", "priority-high"];
+          }
 
           const row = document.createElement("tr");
-          if (o.status === 1 && timeToDeadline <= 120)
+          if (
+            o.status === 1 &&
+            timeToDeadline !== null &&
+            timeToDeadline <= 120
+          ) {
             row.style.borderLeft = "6px solid red";
+          }
 
-          [
+          const cells = [
             o.id_order,
-            o.address,
-            o.SOKM ?? "N/A",
+            o.address || "N/A",
+            typeof o.SOKM === "number" && !isNaN(o.SOKM)
+              ? o.SOKM.toFixed(2)
+              : "N/A",
             o.distance !== null ? o.distance.toFixed(2) : "N/A",
-            o.travel_time,
+            o.travel_time !== null ? o.travel_time : "N/A",
             priorityText,
-            formatDateTime(o.address_created_at || o.created_at),
-            formatDateTime(o.delivery_deadline),
-            o.delivery_note,
-          ].forEach((txt) => {
+            o.created_at
+              ? moment(o.created_at)
+                  .tz("Asia/Ho_Chi_Minh")
+                  .format("DD/MM/YYYY HH:mm:ss")
+              : "N/A",
+            o.delivery_deadline
+              ? moment(o.delivery_deadline)
+                  .tz("Asia/Ho_Chi_Minh")
+                  .format("DD/MM/YYYY HH:mm:ss")
+              : "Không có",
+            o.delivery_note || "Không có",
+          ];
+
+          cells.forEach((txt) => {
             const td = document.createElement("td");
             td.textContent = txt;
             td.className = priorityClass;
@@ -376,25 +700,30 @@
         wrapper.appendChild(table);
       }
 
-      function formatDateTime(dateStr) {
-        if (!dateStr) return "Không có";
-        const d = new Date(dateStr);
-        return isNaN(d.getTime()) ? "Không có" : d.toLocaleString("vi-VN");
-      }
-
       function renderPagination() {
         const container = document.getElementById("pagination");
         container.innerHTML = "";
+        container.style.display = "block";
+
         const prev = document.createElement("button");
         prev.textContent = "Trang trước";
         prev.disabled = currentPage === 1;
-        prev.onclick = () => fetchOrders(currentDay, currentPage - 1);
+        prev.onclick = () => {
+          currentPage = Math.max(1, currentPage - 1);
+          fetchOrders(currentPage);
+        };
+
         const next = document.createElement("button");
         next.textContent = "Trang sau";
-        next.disabled = currentPage === totalPages;
-        next.onclick = () => fetchOrders(currentDay, currentPage + 1);
+        next.disabled = currentPage >= totalPages;
+        next.onclick = () => {
+          currentPage = currentPage + 1;
+          fetchOrders(currentPage);
+        };
+
         const info = document.createElement("span");
         info.textContent = ` Trang ${currentPage} / ${totalPages} `;
+
         container.appendChild(prev);
         container.appendChild(info);
         container.appendChild(next);
@@ -407,68 +736,134 @@
       }
 
       async function searchOrder() {
-        const keyword = $("#searchInput").val().trim().toLowerCase();
+        const keyword = $("#searchInput").val().trim();
+        console.log("Tìm kiếm với keyword:", keyword);
 
         if (!keyword) {
+          console.log("Không có keyword, áp dụng bộ lọc mặc định");
           applyFilters();
           return;
         }
 
         try {
-          const res = await fetch(`${apiUrl}?day=${currentDay}&all=true`);
-          const data = await res.json();
-          const filtered = (data.orders || []).filter((o) =>
-            o.id_order.toLowerCase().includes(keyword)
-          );
+          $("#loading").addClass("show");
+          $("#error").hide();
 
-          renderOrders(filtered);
-          $("#pagination").hide();
+          const query = new URLSearchParams({ keyword });
+          if (currentDateFilter) {
+            query.append("date", currentDateFilter);
+            console.log(`Thêm date filter: ${currentDateFilter}`);
+          }
+
+          console.log(`Gọi API /orders/search-by-id với keyword: ${keyword}`);
+          const res = await fetch(`/orders/search-by-id?${query.toString()}`);
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(
+              `Không tìm thấy đơn hàng khớp với mã này. Vui lòng kiểm tra lại.`
+            );
+          }
+          console.log("Dữ liệu đơn hàng trả về:", data);
+          if (data.orders && data.orders.length > 0) {
+            renderOrders(data.orders);
+            $("#pagination").hide();
+          } else {
+            throw new Error("Không tìm thấy đơn hàng khớp với mã này.");
+          }
         } catch (err) {
-          console.error("Lỗi tìm mã đơn hàng:", err.message);
-          $("#error").text("Không tìm được đơn hàng theo mã.").show();
+          console.error("Lỗi khi tìm kiếm đơn hàng:", err.message);
+          $("#error").text(err.message).show();
+          $("#orders-wrapper").html("");
+        } finally {
+          $("#loading").removeClass("show");
         }
       }
 
+      async function applyDateFilter() {
+        const dateValue = $("#dateFilter").val();
+        currentDateFilter =
+          dateValue && moment(dateValue, "YYYY-MM-DD", true).isValid()
+            ? dateValue
+            : null;
+        console.log("Áp dụng bộ lọc ngày:", currentDateFilter);
+        currentPage = 1;
+        applyFilters();
+        fetchOverdueOrders();
+      }
+
       async function applyFilters() {
-        const selectedDistricts = $("#districtSelect").val();
-        const selectedWards = $("#wardSelect").val();
+        const selectedDistricts = $("#districtSelect").val() || [];
+        const selectedWards = $("#wardSelect").val() || [];
+        currentDateFilter =
+          $("#dateFilter").val() &&
+          moment($("#dateFilter").val(), "YYYY-MM-DD", true).isValid()
+            ? $("#dateFilter").val()
+            : null;
 
-        const hasDistricts = selectedDistricts && selectedDistricts.length > 0;
-        const hasWards = selectedWards && selectedWards.length > 0;
-
-        if (!hasDistricts && !hasWards) {
-          $("#pagination").show();
-          fetchOrders(currentDay, currentPage);
-          return;
-        }
+        const hasDistricts = selectedDistricts.length > 0;
+        const hasWards = selectedWards.length > 0;
 
         try {
-          const query = new URLSearchParams({
-            day: currentDay,
-          });
+          $("#loading").addClass("show");
+          $("#error").hide();
 
+          if (!hasDistricts && !hasWards) {
+            fetchOrders(currentPage);
+            return;
+          }
+
+          const query = new URLSearchParams();
+          if (currentDateFilter) {
+            query.append("date", currentDateFilter);
+          }
           if (hasDistricts) {
             query.append("districts", selectedDistricts.join(","));
           }
-
           if (hasWards) {
             query.append("wards", selectedWards.join(","));
           }
 
+          console.log(
+            "Gọi API /orders/filter-advanced với query:",
+            query.toString()
+          );
           const res = await fetch(
             `/orders/filter-advanced?${query.toString()}`
           );
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(
+              `Không thể lọc đơn hàng: ${
+                errorData.error || "Lỗi server không xác định"
+              }`
+            );
+          }
           const data = await res.json();
-
+          console.log("Dữ liệu lọc nâng cao:", data);
           renderOrders(data.orders || []);
           $("#pagination").hide();
         } catch (err) {
           console.error("Lỗi khi lọc đơn hàng nâng cao:", err.message);
-          $("#error").text("Không thể lọc đơn hàng.").show();
+          $("#error")
+            .text("Lỗi khi lọc đơn hàng: " + err.message)
+            .show();
+          $("#orders-wrapper").html("");
+        } finally {
+          $("#loading").removeClass("show");
         }
       }
 
-      fetchOrders(currentDay, 1);
+      function resetFilters() {
+        $("#searchInput").val("");
+        $("#dateFilter").val("");
+        $("#districtSelect").val(null).trigger("change");
+        $("#wardSelect").val(null).trigger("change");
+        currentDateFilter = null;
+        currentPage = 1;
+        console.log("Reset bộ lọc");
+        applyFilters();
+        fetchOverdueOrders();
+      }
     </script>
   </body>
 </html>
