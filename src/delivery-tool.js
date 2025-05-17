@@ -346,119 +346,6 @@ async function findTransportCompany(address) {
   }
 }
 
-// async function fetchAndSaveOrders() {
-//   const startTime = Date.now();
-//   try {
-//     let api2RequestCount = 0;
-//     const response1 = await axios.get(API_1);
-//     const orders = response1.data;
-//     console.log("Số lượng đơn hàng từ API 1:", orders.length);
-
-//     if (orders.length === lastApiOrderCount && orders.length > 0) {
-//       console.log("Số lượng đơn hàng không thay đổi, bỏ qua gọi API_2.");
-//       console.log("Tổng số yêu cầu API_2:", api2RequestCount);
-//       return [];
-//     }
-
-//     lastApiOrderCount = orders.length;
-
-//     const limit = pLimit(10);
-//     const api2Promises = orders.map((order) =>
-//       limit(() => {
-//         api2RequestCount++;
-//         return axios
-//           .get(`${API_2_BASE}?qc=${order.MaPX}`)
-//           .then((res) => ({
-//             MaPX: order.MaPX,
-//             DcGiaohang: res.data.DcGiaohang || "",
-//             Tinhtranggiao: res.data.Tinhtranggiao || "",
-//             SOKM: order.SOKM || null,
-//             isEmpty: !res.data.DcGiaohang,
-//           }))
-//           .catch((err) => {
-//             console.error(
-//               `Lỗi khi gọi API 2 cho MaPX ${order.MaPX}:`,
-//               err.message
-//             );
-//             return null;
-//           });
-//       })
-//     );
-
-//     const settledResults = await Promise.allSettled(api2Promises);
-//     const results = settledResults
-//       .filter(
-//         (result) => result.status === "fulfilled" && result.value !== null
-//       )
-//       .map((result) => result.value);
-
-//     console.log("Tổng số yêu cầu API_2:", api2RequestCount);
-
-//     const pendingOrders = results.filter(
-//       (order) => order.Tinhtranggiao === "Chờ xác nhận giao/lấy hàng"
-//     );
-//     console.log("Số lượng đơn hàng chưa giao:", pendingOrders.length);
-
-//     if (pendingOrders.length === 0) {
-//       console.log(
-//         `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
-//       );
-//       return [];
-//     }
-
-//     const connection = await mysql.createConnection(dbConfig);
-//     const values = pendingOrders.map((order) => [
-//       order.MaPX,
-//       order.DcGiaohang,
-//       order.Tinhtranggiao,
-//       order.SOKM,
-//       order.Ghichu,
-//       moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
-//     ]);
-//     const [insertResult] = await connection.query(
-//       `
-//       INSERT INTO orders (id_order, address, status, SOKM, delivery_note, created_at)
-//       VALUES ?
-//       ON DUPLICATE KEY UPDATE
-//       address = VALUES(address),
-//       status = VALUES(status),
-//       SOKM = VALUES(SOKM),
-//       delivery_note = VALUES(delivery_note),
-//       created_at = VALUES(created_at)
-//       `,
-//       [values]
-//     );
-//     console.log(
-//       "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (orders):",
-//       insertResult.affectedRows
-//     );
-
-//     const [savedOrders] = await connection.query(
-//       `
-//       SELECT id_order
-//       FROM orders
-//       WHERE id_order IN (?)
-//         AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
-//         AND status = 'Chờ xác nhận giao/lấy hàng'
-//       `,
-//       [pendingOrders.map((order) => order.MaPX)]
-//     );
-//     const savedMaPX = new Set(savedOrders.map((order) => order.id_order));
-
-//     const validResults = pendingOrders.filter((order) =>
-//       savedMaPX.has(order.MaPX)
-//     );
-//     console.log("Số lượng đơn hàng mới và hợp lệ:", validResults.length);
-//     await connection.end();
-//     console.log(
-//       `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
-//     );
-//     return validResults;
-//   } catch (error) {
-//     console.error("Lỗi trong fetchAndSaveOrders:", error.message);
-//     throw error;
-//   }
-// }
 async function fetchAndSaveOrders() {
   const startTime = Date.now();
   try {
@@ -475,20 +362,44 @@ async function fetchAndSaveOrders() {
 
     lastApiOrderCount = orders.length;
 
+    const connection = await mysql.createConnection(dbConfig);
+    const [existingOrders] = await connection.query(
+      `SELECT id_order, address, old_address FROM orders WHERE id_order IN (?)`,
+      [orders.map((order) => order.MaPX)]
+    );
+    const addressMap = new Map(
+      existingOrders.map((o) => [
+        o.id_order,
+        { address: o.address, old_address: o.old_address },
+      ])
+    );
+
     const limit = pLimit(5);
     const api2Promises = orders.map((order) =>
       limit(() => {
         api2RequestCount++;
         return axios
-          .get(`${API_2_BASE}?${SLUG}=${order.MaPX}`)
-          .then((res) => ({
-            MaPX: order.MaPX,
-            DcGiaohang: res.data.DcGiaohang || "",
-            Tinhtranggiao: res.data.Tinhtranggiao || "",
-            SOKM: order.SOKM || null,
-            Ngayxuatkho: order.Ngayxuatkho || null,
-            isEmpty: !res.data.DcGiaohang,
-          }))
+          .get(`${API_2_BASE}?qc=${order.MaPX}`)
+          .then((res) => {
+            const currentAddress = addressMap.get(order.MaPX)?.address || "";
+            const newAddress = res.data.DcGiaohang || "";
+            const addressChanged =
+              currentAddress && currentAddress !== newAddress;
+            return {
+              MaPX: order.MaPX,
+              DcGiaohang: newAddress,
+              Tinhtranggiao: res.data.Tinhtranggiao || "",
+              SOKM: order.SOKM || null,
+              Ghichu: order.GhiChu || null,
+              Ngayxuatkho: order.Ngayxuatkho || null,
+              NgayPX: order.NgayPX || null,
+              isEmpty: !newAddress,
+              addressChanged,
+              old_address: addressChanged
+                ? currentAddress
+                : addressMap.get(order.MaPX)?.old_address || null,
+            };
+          })
           .catch((err) => {
             console.error(
               `Lỗi khi gọi API 2 cho MaPX ${order.MaPX}:`,
@@ -514,14 +425,19 @@ async function fetchAndSaveOrders() {
     console.log("Số lượng đơn hàng chưa giao:", pendingOrders.length);
 
     if (pendingOrders.length === 0) {
+      await connection.end();
       console.log(
         `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
       );
       return [];
     }
 
-    const connection = await mysql.createConnection(dbConfig);
     const values = pendingOrders.map((order) => {
+      const ngayPX = order.NgayPX
+        ? moment(order.NgayPX, "DD/MM/YYYY HH:mm:ss")
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
+        : moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss");
       return [
         order.MaPX,
         order.DcGiaohang,
@@ -529,12 +445,14 @@ async function fetchAndSaveOrders() {
         order.SOKM,
         order.Ghichu,
         order.Ngayxuatkho,
-        moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
+        ngayPX,
+        order.old_address,
       ];
     });
+
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at)
+      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at, old_address)
       VALUES ?
       ON DUPLICATE KEY UPDATE
       address = VALUES(address),
@@ -542,7 +460,8 @@ async function fetchAndSaveOrders() {
       SOKM = VALUES(SOKM),
       delivery_note = VALUES(delivery_note),
       date_delivery = VALUES(date_delivery),
-      created_at = VALUES(created_at)
+      created_at = VALUES(created_at),
+      old_address = IF(VALUES(old_address) IS NOT NULL AND old_address IS NULL, VALUES(old_address), old_address)
       `,
       [values]
     );
@@ -556,7 +475,6 @@ async function fetchAndSaveOrders() {
       SELECT id_order
       FROM orders
       WHERE id_order IN (?)
-        AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
         AND status = 'Chờ xác nhận giao/lấy hàng'
       `,
       [pendingOrders.map((order) => order.MaPX)]
@@ -647,68 +565,86 @@ async function standardizeAddresses(orders) {
         const prompt = `
         Bạn là một AI chuyên chuẩn hóa địa chỉ tại Việt Nam, có khả năng xử lý địa chỉ ở tất cả các tỉnh/thành phố.
 
-        Yêu cầu cụ thể:
-        1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
-        2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
-        3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
-        4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
-        5. Nếu thiếu thông tin Phường/Xã, suy luận Phường/Xã phù hợp dựa trên tên đường và quận/huyện (nếu có). Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
-        6. Nếu thiếu Tỉnh/Thành phố, suy luận tỉnh/thành phố dựa trên các yếu tố như quận/huyện, tên đường, hoặc từ khóa trong địa chỉ (ví dụ: "Q1" gợi ý TP. Hồ Chí Minh, "Kim Mã" gợi ý Hà Nội). Nếu không thể suy luận, đặt Tỉnh/Thành phố là null.
-        7. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
-        8. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
+Yêu cầu cụ thể:
+1. Chuẩn hóa địa chỉ trong trường "DcGiaohang" thành định dạng đầy đủ: "[Số nhà, Đường], [Phường/Xã], [Quận/Huyện/Thị xã/Thành phố], [Tỉnh/Thành phố], Việt Nam".
+2. Tách riêng Quận/Huyện/Thị xã/Thành phố vào trường "District" và Phường/Xã vào trường "Ward".
+3. Loại bỏ thông tin dư thừa như tên người, số điện thoại, thời gian giao hàng, hoặc chú thích không liên quan.
+4. Ưu tiên thông tin địa chỉ cụ thể như số nhà, tên đường, phường, quận, hoặc tỉnh, ngay cả khi có từ khóa nhà xe như "XE", "CHÀNH XE", "GỬI XE".
+5. Kiểm tra tính hợp lệ của phường/xã: Nếu thông tin phường/xã được cung cấp nhưng không hợp lệ (ví dụ, phường không tồn tại trên đường hoặc trong quận/huyện được chỉ định), sửa phường/xã thành phường/xã hợp lệ dựa trên tên đường và quận/huyện. Ví dụ: "191 Bùi Thị Xuân, Phường 6, Quận Tân Bình" là sai vì Phường 6 không tồn tại trên đường Bùi Thị Xuân ở Quận Tân Bình, sửa thành "Phường 1" vì đó là phường hợp lệ.
+6. Nếu thiếu thông tin phường/xã, suy luận phường/xã phù hợp dựa trên tên đường và quận/huyện (nếu có). Ví dụ: "191 Bùi Thị Xuân, Quận Tân Bình" nên suy luận thành "Phường 1" vì đường Bùi Thị Xuân thuộc Phường 1, Quận Tân Bình. Nếu không thể suy luận, đặt "Ward" là null nhưng vẫn cố gắng chuẩn hóa các trường khác.
+7. Nếu thiếu tỉnh/thành phố, suy luận tỉnh/thành phố dựa trên quận/huyện, tên đường, hoặc từ khóa trong địa chỉ (ví dụ: "Q1" gợi ý TP. Hồ Chí Minh, "Kim Mã" gợi ý Hà Nội). Nếu không thể suy luận, đặt tỉnh/thành phố là null.
+8. Nếu không thể chuẩn hóa đầy đủ (ví dụ: chỉ có tên nhà xe như "Gửi xe Kim Mã" mà không có số nhà, đường, hoặc khu vực), trả về null cho các trường DcGiaohang, District, Ward.
+9. Xử lý các định dạng số nhà không chuẩn (ví dụ: "174-176-178") như một chuỗi số nhà hợp lệ.
+10. Ưu tiên độ chính xác: Khi suy luận hoặc sửa phường/xã, sử dụng thông tin địa lý chính xác của Việt Nam, đặc biệt tại TP. Hồ Chí Minh, nơi các đường phố thường thuộc một phường cụ thể trong quận.
 
-        Ví dụ:
-        - "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
-          {
-            "MaPX": "X241019078-N",
-            "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
-            "District": "Quận 6",
-            "Ward": "Phường 1",
-            "Source": "OpenAI"
-          }
-        - "Gửi xe Kim Mã" → 
-          {
-            "MaPX": "X2410190xx-N",
-            "DcGiaohang": null,
-            "District": null,
-            "Ward": null,
-            "Source": null
-          }
-        - "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
-          {
-            "MaPX": "TEMP_1",
-            "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
-            "District": "Quận 1",
-            "Ward": "Phường Đa Kao",
-            "Source": "OpenAI"
-          }
-        - "123 Trần Hưng Đạo, TP Đà Nẵng" → 
-          {
-            "MaPX": "TEMP_3",
-            "DcGiaohang": "123 Trần Hưng Đạo, Phường Hải Châu I, Quận Hải Châu, Đà Nẵng, Việt Nam",
-            "District": "Quận Hải Châu",
-            "Ward": "Phường Hải Châu I",
-            "Source": "OpenAI"
-          }
+Ví dụ:
+- "191 BÙI THỊ XUÂN, PHƯỜNG 6, QUẬN TÂN BÌNH" → 
+  {
+    "MaPX": "X241019078-N",
+    "DcGiaohang": "191 Bùi Thị Xuân, Phường 1, Quận Tân Bình, Hồ Chí Minh, Việt Nam",
+    "District": "Quận Tân Bình",
+    "Ward": "Phường 1",
+    "Source": "OpenAI"
+  }
+- "191 Bùi Thị Xuân, Quận Tân Bình" → 
+  {
+    "MaPX": "X241019079-N",
+    "DcGiaohang": "191 Bùi Thị Xuân, Phường 1, Quận Tân Bình, Hồ Chí Minh, Việt Nam",
+    "District": "Quận Tân Bình",
+    "Ward": "Phường 1",
+    "Source": "OpenAI"
+  }
+- "XE ANH KHOA 1390 Võ Văn Kiệt (Góc Chu Văn An) 0936845050 (A Duy)" → 
+  {
+    "MaPX": "X241019078-N",
+    "DcGiaohang": "1390 Võ Văn Kiệt, Phường 1, Quận 6, Hồ Chí Minh, Việt Nam",
+    "District": "Quận 6",
+    "Ward": "Phường 1",
+    "Source": "OpenAI"
+  }
+- "Gửi xe Kim Mã" → 
+  {
+    "MaPX": "X2410190xx-N",
+    "DcGiaohang": null,
+    "District": null,
+    "Ward": null,
+    "Source": null
+  }
+- "12L NGUYỄN THỊ MINH KHAI P.ĐAKAO Q1" → 
+  {
+    "MaPX": "TEMP_1",
+    "DcGiaohang": "12L Nguyễn Thị Minh Khai, Phường Đa Kao, Quận 1, Hồ Chí Minh, Việt Nam",
+    "District": "Quận 1",
+    "Ward": "Phường Đa Kao",
+    "Source": "OpenAI"
+  }
+- "123 Trần Hưng Đạo, TP Đà Nẵng" → 
+  {
+    "MaPX": "TEMP_3",
+    "DcGiaohang": "123 Trần Hưng Đạo, Phường Hải Châu I, Quận Hải Châu, Đà Nẵng, Việt Nam",
+    "District": "Quận Hải Châu",
+    "Ward": "Phường Hải Châu I",
+    "Source": "OpenAI"
+  }
 
-        Đầu vào:
-        \`\`\`json
-        [${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
-        \`\`\`
+Đầu vào:
+\`\`\`json
+[${JSON.stringify({ MaPX, DcGiaohang: cleanedAddress })}]
+\`\`\`
 
-        Đầu ra:
-        Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
-        \`\`\`json
-        [
-          {
-            "MaPX": "X2410190xx-N",
-            "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
-            "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
-            "Ward": "Phường/Xã hoặc null",
-            "Source": "OpenAI hoặc null"
-          }
-        ]
-        \`\`\`
+Đầu ra:
+Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
+\`\`\`json
+[
+  {
+    "MaPX": "X2410190xx-N",
+    "DcGiaohang": "Địa chỉ đã được chuẩn hóa đầy đủ hoặc null",
+    "District": "Quận/Huyện/Thị xã/Thành phố hoặc null",
+    "Ward": "Phường/Xã hoặc null",
+    "Source": "OpenAI hoặc null"
+  }
+]
+\`\`\`
         `;
 
         try {
@@ -894,7 +830,8 @@ async function updatePriorityStatus(io) {
       SET oa.status = 1
       WHERE oa.status = 0
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND oa.created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+        AND o.date_delivery IS NOT NULL
+        AND STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s') <= DATE_SUB(NOW(), INTERVAL 15 MINUTE)
       `
     );
     await connection.end();
@@ -928,15 +865,15 @@ async function calculateDistances() {
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL
-        AND oa.distance IS NULL
-        AND oa.travel_time IS NULL
+        AND (oa.distance IS NULL OR oa.travel_time IS NULL)
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND o.created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
       `
     );
 
     if (orderCount[0].count === 0) {
-      console.log("Không có đơn hàng mới để tính khoảng cách, bỏ qua.");
+      console.log(
+        "Không có đơn hàng mới hoặc cần tính lại khoảng cách, bỏ qua."
+      );
       await connection.end();
       console.log(
         `calculateDistances thực thi trong ${Date.now() - startTime}ms`
@@ -950,16 +887,14 @@ async function calculateDistances() {
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL
-        AND oa.distance IS NULL
-        AND oa.travel_time IS NULL
+        AND (oa.distance IS NULL OR oa.travel_time IS NULL)
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND o.created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
       `
     );
-    console.log("Các đơn hàng mới để tính khoảng cách:", orders.length);
+    console.log("Các đơn hàng để tính khoảng cách:", orders.length);
 
     const addressMap = {};
-    const expressDeliveryOrders = []; // Lưu các đơn hàng CHUYỂN PHÁT NHANH
+    const expressDeliveryOrders = [];
 
     orders.forEach((order) => {
       if (order.address.toUpperCase() === "CHUYỂN PHÁT NHANH") {
@@ -979,6 +914,12 @@ async function calculateDistances() {
       limit(async () => {
         console.log(`Tính tuyến đường cho địa chỉ: ${address}`);
         const route = await calculateRoute(WAREHOUSE_ADDRESS, address);
+        if (route.distance === null || route.travelTime === null) {
+          console.warn(
+            `Lỗi tính tuyến đường cho địa chỉ ${address}, gán distance = 0, travel_time = 0`
+          );
+          return { address, distance: 0, travelTime: 0 };
+        }
         return { address, ...route };
       })
     );
@@ -1040,27 +981,57 @@ async function updateStandardizedAddresses(data) {
     console.log(
       `Số lượng đơn hàng hợp lệ để lưu vào orders_address: ${validOrders.length}`
     );
-    console.log("Valid orders:", JSON.stringify(validOrders, null, 2));
 
     if (validOrders.length > 0) {
-      const values = validOrders.map((order) => [
-        order.MaPX,
-        order.DcGiaohang,
-        order.District,
-        order.Ward,
-        order.Source,
-      ]);
+      const [existingAddresses] = await connection.query(
+        `SELECT id_order, distance, travel_time FROM orders_address WHERE id_order IN (?)`,
+        [validOrders.map((order) => order.MaPX)]
+      );
+      const addressMap = new Map(
+        existingAddresses.map((o) => [
+          o.id_order,
+          { distance: o.distance, travel_time: o.travel_time },
+        ])
+      );
+
+      const values = validOrders.map((order) => {
+        const current = addressMap.get(order.MaPX) || {
+          distance: null,
+          travel_time: null,
+        };
+        return [
+          order.MaPX,
+          order.DcGiaohang,
+          order.District,
+          order.Ward,
+          order.Source,
+          order.addressChanged ? null : undefined,
+          order.addressChanged ? null : undefined,
+          order.addressChanged ? current.distance : null,
+          order.addressChanged ? current.travel_time : null,
+        ];
+      });
 
       console.log("Values to insert into orders_address:", values);
 
       const [result] = await connection.query(
-        `INSERT INTO orders_address (id_order, address, district, ward, source) VALUES ? 
-         ON DUPLICATE KEY UPDATE 
-         address = VALUES(address), 
-         district = VALUES(district), 
-         ward = VALUES(ward), 
-         source = VALUES(source)`,
-        [values]
+        `
+        INSERT INTO orders_address (
+          id_order, address, district, ward, source, 
+          distance, travel_time, old_distance, old_travel_time
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+        address = VALUES(address),
+        district = VALUES(district),
+        ward = VALUES(ward),
+        source = VALUES(source),
+        distance = IF(VALUES(distance) IS NULL, NULL, distance),
+        travel_time = IF(VALUES(travel_time) IS NULL, NULL, travel_time),
+        old_distance = IF(VALUES(old_distance) IS NOT NULL, VALUES(old_distance), old_distance),
+        old_travel_time = IF(VALUES(old_travel_time) IS NOT NULL, VALUES(old_travel_time), old_travel_time)
+        `,
+        values.flat()
       );
       console.log(
         "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (orders_address):",
@@ -1108,7 +1079,8 @@ async function groupOrders(page = 1, filterDate = null) {
       if (!moment(filterDate, "YYYY-MM-DD", true).isValid()) {
         throw new Error("Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD");
       }
-      dateCondition = "DATE(oa.created_at) = ?";
+      dateCondition =
+        "DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = ?";
       queryParams.push(filterDate);
     }
 
@@ -1140,17 +1112,21 @@ async function groupOrders(page = 1, filterDate = null) {
         oa.created_at,
         oa.district,
         oa.ward,
+        oa.old_distance,
+        oa.old_travel_time,
         o.SOKM,
         o.priority,
         o.delivery_deadline,
         o.date_delivery,
         o.delivery_note,
-        o.address AS source_address,
+        o.address AS current_address,
+        o.old_address,
         CASE 
-          WHEN DATE(oa.created_at) <= CURDATE() - INTERVAL 2 DAY THEN 2
-          WHEN DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY THEN 1 
+          WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
+          WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
           ELSE 0 
-        END AS days_old
+        END AS days_old,
+        TIMESTAMPDIFF(MINUTE, oa.created_at, NOW()) AS minutes_since_created
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
@@ -1190,7 +1166,8 @@ async function groupOrders(page = 1, filterDate = null) {
         END ASC,
         COALESCE(oa.distance, 999999) ASC,
         COALESCE(oa.travel_time, 999999) ASC,
-        oa.created_at ASC
+        COALESCE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s'), '9999-12-31 23:59:59') ASC,
+        o.id_order ASC
       LIMIT ${pageSize} OFFSET ${offset}
     `;
 
@@ -1198,17 +1175,29 @@ async function groupOrders(page = 1, filterDate = null) {
 
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
-      address: row.address,
+      address: row.address || "N/A",
       source: row.source,
-      distance: row.distance,
-      travel_time: row.travel_time,
+      distance:
+        row.distance !== null ? parseFloat(row.distance.toFixed(2)) : null,
+      travel_time: row.travel_time !== null ? row.travel_time : null,
       status: row.status,
       created_at: row.created_at
         ? moment(row.created_at)
             .tz("Asia/Ho_Chi_Minh")
             .format("YYYY-MM-DD HH:mm:ss")
         : null,
-      SOKM: row.SOKM,
+      district: row.district || "N/A",
+      ward: row.ward || "N/A",
+      old_distance:
+        row.old_distance !== null
+          ? parseFloat(row.old_distance.toFixed(2))
+          : null,
+      old_travel_time:
+        row.old_travel_time !== null ? row.old_travel_time : null,
+      SOKM:
+        row.SOKM !== null && !isNaN(parseFloat(row.SOKM))
+          ? parseFloat(parseFloat(row.SOKM).toFixed(2))
+          : null,
       priority: row.priority,
       delivery_deadline: row.delivery_deadline
         ? moment(row.delivery_deadline)
@@ -1217,10 +1206,11 @@ async function groupOrders(page = 1, filterDate = null) {
         : null,
       date_delivery: row.date_delivery,
       delivery_note: row.delivery_note,
-      source_address: row.source_address,
-      district: row.district || null,
-      ward: row.ward || null,
+      current_address: row.current_address,
+      old_address: row.old_address,
       days_old: row.days_old,
+      minutes_since_created:
+        row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
     await connection.end();
@@ -1233,7 +1223,7 @@ async function groupOrders(page = 1, filterDate = null) {
       orders: parsedResults,
     };
   } catch (error) {
-    console.error("Lỗi trong groupOrders:", error.message, error.stack);
+    console.error("Lỗi trong groupOrders2:", error.message, error.stack);
     throw error;
   }
 }
@@ -1256,7 +1246,8 @@ async function groupOrders2(page = 1, filterDate = null) {
       if (!moment(filterDate, "YYYY-MM-DD", true).isValid()) {
         throw new Error("Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD");
       }
-      dateCondition = "DATE(oa.created_at) = ?";
+      dateCondition =
+        "DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = ?";
       queryParams.push(filterDate);
     }
 
@@ -1288,17 +1279,21 @@ async function groupOrders2(page = 1, filterDate = null) {
         oa.created_at,
         oa.district,
         oa.ward,
+        oa.old_distance,
+        oa.old_travel_time,
         o.SOKM,
         o.priority,
         o.delivery_deadline,
         o.date_delivery,
         o.delivery_note,
-        o.address AS source_address,
+        o.address AS current_address,
+        o.old_address,
         CASE 
-          WHEN DATE(oa.created_at) <= CURDATE() - INTERVAL 2 DAY THEN 2
-          WHEN DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY THEN 1 
+          WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
+          WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
           ELSE 0 
-        END AS days_old
+        END AS days_old,
+        TIMESTAMPDIFF(MINUTE, oa.created_at, NOW()) AS minutes_since_created
       FROM orders_address oa
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
@@ -1338,7 +1333,8 @@ async function groupOrders2(page = 1, filterDate = null) {
         END ASC,
         COALESCE(oa.distance, 999999) ASC,
         COALESCE(oa.travel_time, 999999) ASC,
-        oa.created_at ASC
+        COALESCE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s'), '9999-12-31 23:59:59') ASC,
+        o.id_order ASC
       LIMIT ${pageSize} OFFSET ${offset}
     `;
 
@@ -1346,17 +1342,29 @@ async function groupOrders2(page = 1, filterDate = null) {
 
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
-      address: row.address,
+      address: row.address || "N/A",
       source: row.source,
-      distance: row.distance,
-      travel_time: row.travel_time,
+      distance:
+        row.distance !== null ? parseFloat(row.distance.toFixed(2)) : null,
+      travel_time: row.travel_time !== null ? row.travel_time : null,
       status: row.status,
       created_at: row.created_at
         ? moment(row.created_at)
             .tz("Asia/Ho_Chi_Minh")
             .format("YYYY-MM-DD HH:mm:ss")
         : null,
-      SOKM: row.SOKM,
+      district: row.district || "N/A",
+      ward: row.ward || "N/A",
+      old_distance:
+        row.old_distance !== null
+          ? parseFloat(row.old_distance.toFixed(2))
+          : null,
+      old_travel_time:
+        row.old_travel_time !== null ? row.old_travel_time : null,
+      SOKM:
+        row.SOKM !== null && !isNaN(parseFloat(row.SOKM))
+          ? parseFloat(parseFloat(row.SOKM).toFixed(2))
+          : null,
       priority: row.priority,
       delivery_deadline: row.delivery_deadline
         ? moment(row.delivery_deadline)
@@ -1365,10 +1373,11 @@ async function groupOrders2(page = 1, filterDate = null) {
         : null,
       date_delivery: row.date_delivery,
       delivery_note: row.delivery_note,
-      source_address: row.source_address,
-      district: row.district || null,
-      ward: row.ward || null,
+      current_address: row.current_address,
+      old_address: row.old_address,
       days_old: row.days_old,
+      minutes_since_created:
+        row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
     await connection.end();
@@ -1381,7 +1390,7 @@ async function groupOrders2(page = 1, filterDate = null) {
       orders: parsedResults,
     };
   } catch (error) {
-    console.error("Lỗi trong groupOrders:", error.message, error.stack);
+    console.error("Lỗi trong groupOrders2:", error.message, error.stack);
     throw error;
   }
 }
@@ -1390,33 +1399,22 @@ async function syncOrderStatus() {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
-    
-    // Lấy đơn hàng cần đồng bộ
+
     const [orders] = await connection.query(
       `
-      SELECT id_order, created_at
+      SELECT id_order
       FROM orders
       WHERE status = 'Chờ xác nhận giao/lấy hàng'
-        AND created_at >= DATE_SUB(NOW(), INTERVAL 72 HOUR)
+        AND date_delivery IS NOT NULL
       `
     );
     console.log("Số lượng đơn hàng cần đồng bộ trạng thái:", orders.length);
 
-    const updateStatusPromises = orders.map(async (order) => {
-      const createdAt = moment(order.created_at);
-      const minutesSinceCreated = moment().diff(createdAt, "minutes");
-      if (minutesSinceCreated > 15) {
-        await connection.query(
-          `
-          UPDATE orders_address
-          SET status = 1
-          WHERE id_order = ? AND status = 0
-          `,
-          [order.id_order]
-        );
-      }
-    });
-    await Promise.all(updateStatusPromises);
+    if (orders.length === 0) {
+      await connection.end();
+      console.log(`syncOrderStatus thực thi trong ${Date.now() - startTime}ms`);
+      return;
+    }
 
     let api2RequestCount = 0;
     const limit = pLimit(10);
@@ -1473,10 +1471,12 @@ async function syncOrderStatus() {
     await connection.end();
     console.log(`syncOrderStatus thực thi trong ${Date.now() - startTime}ms`);
 
-    io.emit("overdueOrdersUpdated", {
-      message: "Danh sách đơn hàng quá hạn đã được cập nhật",
-      updatedCount: orders.length,
-    });
+    if (results.length > 0) {
+      io.emit("overdueOrdersUpdated", {
+        message: "Danh sách đơn hàng đã được cập nhật trạng thái",
+        updatedCount: results.length,
+      });
+    }
   } catch (error) {
     console.error("Lỗi trong syncOrderStatus:", error.message);
     throw error;
@@ -1582,13 +1582,13 @@ async function analyzeDeliveryNote() {
     const connection = await mysql.createConnection(dbConfig);
     const [orders] = await connection.query(
       `
-      SELECT o.id_order, o.delivery_note, oa.travel_time
+      SELECT o.id_order, o.delivery_note, o.date_delivery, oa.travel_time
       FROM orders o
-      LEFT JOIN orders_address oa ON o.id_order = oa.id_order
+      LEFT JOIN orders_address oa ON o.id_order = o.id_order
       WHERE o.delivery_note IS NOT NULL
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        AND priority = 0
-        AND delivery_deadline IS NULL
+        AND o.priority = 0
+        AND o.delivery_deadline IS NULL
       `
     );
     console.log(`Số lượng đơn hàng có ghi chú: ${orders.length}`);
@@ -1609,30 +1609,50 @@ async function analyzeDeliveryNote() {
       if (!note) return "";
       return note
         .toLowerCase()
-        .replace(/trc/g, "trước")
+        .replace(/trc|truoc/g, "trước")
         .replace(/gap/g, "gấp")
-        .replace(/sn/g, "sớm")
-        .replace(/nhah/g, "nhanh")
+        .replace(/sn|sớm nhất|sớm nhé/g, "sớm")
+        .replace(/nhah|nhan|nhanh len|nhanh nha/g, "nhanh")
         .replace(/sang/g, "sáng")
-        .replace(/chiu/g, "chiều")
+        .replace(/chiu|chiu nay/g, "chiều")
+        .replace(/toi|toi nay/g, "tối")
+        .replace(/hom nay|hnay/g, "hôm nay")
+        .replace(/mai|ngay mai/g, "ngày mai")
+        .replace(/mot|ngay mot/g, "ngày mốt")
         .replace(/\s+/g, " ")
         .trim();
     };
 
     const parseDeliveryNote = (note, travelTime, order) => {
-      const currentTime = moment().tz("Asia/Ho_Chi_Minh");
-      const isSaturday = currentTime.day() === 6; // Thứ Bảy
+      const deliveryTime = moment(
+        order.date_delivery,
+        "DD/MM/YYYY HH:mm:ss"
+      ).tz("Asia/Ho_Chi_Minh");
+      const isSaturday = deliveryTime.day() === 6;
       let deliveryDeadline = null;
       let priority = 0;
 
+      if (!deliveryTime.isValid()) {
+        console.warn(
+          `Invalid date_delivery for id_order ${order.id_order}: ${order.date_delivery}`
+        );
+        return {
+          id_order: order.id_order,
+          delivery_deadline: null,
+          priority: 0,
+        };
+      }
+
       const normalizedNote = normalizeNote(note);
 
+      // Trường hợp gấp/khẩn cấp
       const urgentRegex =
-        /(gấp|ngay|nhanh|nhanh tí|nhanh lên|liền|ngay lập tức|sớm nhất|sớm tí|sớm nhé|len nhe|gấp lắm|khẩn cấp|urgent|hỏa tốc|nhanh nhất|mau lên|nhanh nha|sớm nhất có thể|sáng sớm)/i;
+        /(gấp|nhanh|sớm|liền|ngay lập tức|khẩn cấp|urgent|hỏa tốc|mau lên|nhanh nhất|sáng sớm)/i;
       if (urgentRegex.test(normalizedNote)) {
-        deliveryDeadline = currentTime.clone().add(travelTime + 15, "minutes");
+        deliveryDeadline = deliveryTime.clone().add(travelTime + 15, "minutes");
         priority = 2;
       } else {
+        // Trường hợp chỉ định thời gian cụ thể
         const specificTimeRegex =
           /trước\s*(?:(\d{1,2}(?::\d{2})?(?:h|pm|am)?)|ăn trưa|ăn tối|(\d{1,2}h\d{2}))(?:\s*(sáng|chiều))?/i;
         const specificMatch = normalizedNote.match(specificTimeRegex);
@@ -1641,7 +1661,7 @@ async function analyzeDeliveryNote() {
             let timeStr =
               specificMatch[1] || specificMatch[2].replace("h", ":");
             if (!timeStr.includes(":")) timeStr += ":00";
-            deliveryDeadline = currentTime
+            deliveryDeadline = deliveryTime
               .clone()
               .startOf("day")
               .add(moment.duration(timeStr));
@@ -1653,21 +1673,20 @@ async function analyzeDeliveryNote() {
             ) {
               deliveryDeadline.subtract(12, "hours");
             }
-            deliveryDeadline.subtract(15, "minutes");
             const timeToDeadline = deliveryDeadline.diff(
-              currentTime,
+              deliveryTime,
               "minutes"
             );
-            priority = timeToDeadline <= travelTime + 15 ? 2 : 1;
+            priority = timeToDeadline <= (travelTime + 15) * 1.5 ? 2 : 1;
           } else if (specificMatch[0].includes("ăn trưa")) {
-            deliveryDeadline = currentTime
+            deliveryDeadline = deliveryTime
               .clone()
               .startOf("day")
               .add(11, "hours")
               .add(45, "minutes");
             priority = 1;
           } else if (specificMatch[0].includes("ăn tối")) {
-            deliveryDeadline = currentTime
+            deliveryDeadline = deliveryTime
               .clone()
               .startOf("day")
               .add(17, "hours")
@@ -1675,88 +1694,58 @@ async function analyzeDeliveryNote() {
             priority = 1;
           }
         } else {
+          // Trường hợp ghi chú mơ hồ
           const vagueRegex =
-            /(đầu giờ chiều|chiều nay|hôm nay|sáng nay|trong sáng nay|trong chiều nay|sáng mai|ngày mai đầu giờ|ngày mai chiều|ngày mai tối|ngày mốt|ngày kia|tuần sau|thứ hai|sáng (\d+) ngày nữa|ngày mai|cuối giờ|đầu giờ)/i;
+            /(sáng nay|chiều nay|tối nay|hôm nay|trong ngày|sáng mai|chiều mai|tối mai|ngày mai|ngày mốt|ngày kia|thứ hai|tuần sau|đầu giờ|đầu giờ chiều|cuối giờ|sáng (\d+) ngày nữa)/i;
           const vagueMatch = normalizedNote.match(vagueRegex);
           if (vagueMatch) {
             switch (vagueMatch[0].toLowerCase()) {
-              case "đầu giờ":
-                deliveryDeadline = currentTime
+              case "sáng nay":
+                deliveryDeadline = deliveryTime
                   .clone()
                   .startOf("day")
-                  .add(8, "hours")
-                  .add(travelTime + 15, "minutes");
-                priority = 1;
-                break;
-              case "đầu giờ chiều":
-                deliveryDeadline = currentTime
-                  .clone()
-                  .startOf("day")
-                  .add(13, "hours")
-                  .add(30, "minutes")
-                  .add(travelTime + 15, "minutes");
-                priority = 1;
+                  .add(10, "hours");
+                priority =
+                  deliveryDeadline.diff(deliveryTime, "minutes") <= 60 ? 2 : 1;
                 break;
               case "chiều nay":
-              case "trong chiều nay":
-                deliveryDeadline = currentTime
+                deliveryDeadline = deliveryTime
                   .clone()
                   .startOf("day")
-                  .add(17, "hours")
-                  .add(40, "minutes");
+                  .add(15, "hours");
                 priority =
-                  deliveryDeadline.diff(currentTime, "minutes") < 30 ? 2 : 1;
+                  deliveryDeadline.diff(deliveryTime, "minutes") <= 60 ? 2 : 1;
                 break;
+              case "tối nay":
               case "hôm nay":
-                deliveryDeadline = currentTime
+              case "trong ngày":
+                deliveryDeadline = deliveryTime
                   .clone()
                   .startOf("day")
                   .add(17, "hours")
                   .add(40, "minutes");
                 priority =
-                  deliveryDeadline.diff(currentTime, "minutes") < 60 ? 2 : 1;
-                break;
-              case "sáng nay":
-                deliveryDeadline = currentTime
-                  .clone()
-                  .startOf("day")
-                  .add(8, "hours")
-                  .add(travelTime + 15, "minutes");
-                priority =
-                  deliveryDeadline.diff(currentTime, "minutes") < 30 ? 2 : 1;
-                break;
-              case "trong sáng nay":
-                deliveryDeadline = currentTime
-                  .clone()
-                  .startOf("day")
-                  .add(11, "hours")
-                  .add(45, "minutes");
-                priority =
-                  deliveryDeadline.diff(currentTime, "minutes") < 30 ? 2 : 1;
+                  deliveryDeadline.diff(deliveryTime, "minutes") <= 90 ? 2 : 1;
                 break;
               case "sáng mai":
-              case "ngày mai đầu giờ":
               case "ngày mai":
-                deliveryDeadline = currentTime
+                deliveryDeadline = deliveryTime
                   .clone()
                   .add(1, "day")
                   .startOf("day")
-                  .add(8, "hours")
-                  .add(travelTime + 15, "minutes");
+                  .add(10, "hours");
                 priority = 1;
                 break;
-              case "ngày mai chiều":
-                deliveryDeadline = currentTime
+              case "chiều mai":
+                deliveryDeadline = deliveryTime
                   .clone()
                   .add(1, "day")
                   .startOf("day")
-                  .add(13, "hours")
-                  .add(30, "minutes")
-                  .add(travelTime + 15, "minutes");
+                  .add(15, "hours");
                 priority = 1;
                 break;
-              case "ngày mai tối":
-                deliveryDeadline = currentTime
+              case "tối mai":
+                deliveryDeadline = deliveryTime
                   .clone()
                   .add(1, "day")
                   .startOf("day")
@@ -1766,47 +1755,65 @@ async function analyzeDeliveryNote() {
                 break;
               case "ngày mốt":
               case "ngày kia":
-              case "sáng 2 ngày nữa":
-                deliveryDeadline = currentTime
+                deliveryDeadline = deliveryTime
                   .clone()
                   .add(2, "days")
                   .startOf("day")
-                  .add(8, "hours")
-                  .add(travelTime + 15, "minutes");
+                  .add(10, "hours");
                 priority = 1;
                 break;
-              case "tuần sau":
               case "thứ hai":
-                deliveryDeadline = currentTime
+                deliveryDeadline = deliveryTime
                   .clone()
                   .startOf("week")
                   .add(1, "week")
                   .startOf("day")
+                  .add(10, "hours");
+                if (deliveryTime.day() === 0) deliveryDeadline.add(1, "day");
+                priority = 1;
+                break;
+              case "tuần sau":
+                deliveryDeadline = deliveryTime
+                  .clone()
+                  .startOf("week")
+                  .add(1, "week")
+                  .startOf("day")
+                  .add(10, "hours");
+                priority = 1;
+                break;
+              case "đầu giờ":
+                deliveryDeadline = deliveryTime
+                  .clone()
+                  .startOf("day")
                   .add(8, "hours")
                   .add(travelTime + 15, "minutes");
-                if (currentTime.day() === 0) {
-                  deliveryDeadline.add(1, "day");
-                }
+                priority = 1;
+                break;
+              case "đầu giờ chiều":
+                deliveryDeadline = deliveryTime
+                  .clone()
+                  .startOf("day")
+                  .add(13, "hours")
+                  .add(30, "minutes");
                 priority = 1;
                 break;
               case "cuối giờ":
-                deliveryDeadline = currentTime
+                deliveryDeadline = deliveryTime
                   .clone()
                   .startOf("day")
                   .add(17, "hours")
                   .add(40, "minutes");
                 priority =
-                  deliveryDeadline.diff(currentTime, "minutes") < 60 ? 2 : 1;
+                  deliveryDeadline.diff(deliveryTime, "minutes") <= 90 ? 2 : 1;
                 break;
               default:
                 if (vagueMatch[1]) {
                   const days = parseInt(vagueMatch[1], 10);
-                  deliveryDeadline = currentTime
+                  deliveryDeadline = deliveryTime
                     .clone()
                     .add(days, "days")
                     .startOf("day")
-                    .add(8, "hours")
-                    .add(travelTime + 15, "minutes");
+                    .add(10, "hours");
                   priority = 1;
                 }
                 break;
@@ -1814,6 +1821,7 @@ async function analyzeDeliveryNote() {
           }
         }
       }
+
       if (deliveryDeadline) {
         const startOfDay = deliveryDeadline.clone().startOf("day");
         const workStart = startOfDay.clone().add(8, "hours");
@@ -1822,29 +1830,32 @@ async function analyzeDeliveryNote() {
           : startOfDay.clone().add(17, "hours").add(40, "minutes");
         const lunchStart = startOfDay.clone().add(12, "hours");
         const lunchEnd = startOfDay.clone().add(13, "hours").add(30, "minutes");
-        let isDuringLunchBreak = false;
+
+        // Xử lý thời gian nghỉ trưa (12:00 - 13:30)
         if (
           deliveryDeadline.isSameOrAfter(lunchStart) &&
           deliveryDeadline.isBefore(lunchEnd)
         ) {
-          deliveryDeadline = lunchEnd.clone().add(travelTime + 15, "minutes");
-          isDuringLunchBreak = true;
+          deliveryDeadline = lunchEnd.clone();
+          priority =
+            deliveryDeadline.diff(deliveryTime, "minutes") <= 90 ? 2 : 1;
         }
 
+        // Đảm bảo deadline không trước giờ làm việc hoặc sau giờ kết thúc
         if (deliveryDeadline.isBefore(workStart)) {
-          deliveryDeadline = workStart.clone().add(travelTime + 15, "minutes");
+          deliveryDeadline = workStart.clone();
+          priority = 1;
         } else if (deliveryDeadline.isAfter(workEnd)) {
-          deliveryDeadline = workEnd;
+          deliveryDeadline = workEnd.clone();
+          priority = 1;
         }
 
-        if (deliveryDeadline.isBefore(currentTime)) {
-          deliveryDeadline = currentTime
+        // Nếu deadline trước thời gian hiện tại, đặt thành thời gian sớm nhất có thể
+        if (deliveryDeadline.isBefore(deliveryTime)) {
+          deliveryDeadline = deliveryTime
             .clone()
             .add(travelTime + 15, "minutes");
           priority = 2;
-        } else if (isDuringLunchBreak) {
-          const timeFromWorkStart = deliveryDeadline.diff(lunchEnd, "minutes");
-          priority = timeFromWorkStart < 60 ? 2 : 1;
         }
 
         return {
@@ -1853,6 +1864,7 @@ async function analyzeDeliveryNote() {
           priority,
         };
       }
+
       return {
         id_order: order.id_order,
         delivery_deadline: null,
@@ -1864,9 +1876,9 @@ async function analyzeDeliveryNote() {
       limit(async () => {
         const result = parseDeliveryNote(
           order.delivery_note,
-          order.travel_time,
+          order.travel_time || 15,
           order
-        );
+        ); // Default travel_time = 15 nếu NULL
         console.log(
           `Kết quả phân tích cho id_order ${order.id_order}:`,
           result
@@ -1974,9 +1986,7 @@ async function main(page = 1, io) {
           data: groupedOrders,
           nextRunTime: getNextCronRunTime(),
         });
-        console.log(
-          `Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`
-        );
+        console.log(`Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`);
       }
       return groupedOrders;
     }
@@ -2017,9 +2027,7 @@ async function main(page = 1, io) {
         data: groupedOrders,
         nextRunTime: getNextCronRunTime(),
       });
-      console.log(
-        `Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`
-      );
+      console.log(`Đã gửi danh sách đơn hàng và nextRunTime qua Socket.io`);
     }
 
     console.log("🏁 Công cụ giao hàng hoàn tất.");
@@ -2312,7 +2320,9 @@ app.get("/orders/filter-by-date", async (req, res) => {
         .json({ error: "filterDate phải có định dạng YYYY-MM-DD" });
     }
 
-    console.log(`API received: page=${page}, filterDate=${filterDate || "all"}`);
+    console.log(
+      `API received: page=${page}, filterDate=${filterDate || "all"}`
+    );
 
     const connection = await mysql.createConnection(dbConfig);
     const pageSize = 10;
@@ -2324,7 +2334,11 @@ app.get("/orders/filter-by-date", async (req, res) => {
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        ${filterDate ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?" : ""}
+        ${
+          filterDate
+            ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?"
+            : ""
+        }
     `;
     const countParams = filterDate ? [filterDate] : [];
     const [totalResult] = await connection.execute(countQuery, countParams);
@@ -2357,7 +2371,11 @@ app.get("/orders/filter-by-date", async (req, res) => {
       JOIN orders o ON oa.id_order = o.id_order
       WHERE oa.address IS NOT NULL 
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
-        ${filterDate ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?" : ""}
+        ${
+          filterDate
+            ? "AND DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = ?"
+            : ""
+        }
       ORDER BY
         CASE
           WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100

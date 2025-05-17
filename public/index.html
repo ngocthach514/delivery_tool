@@ -779,7 +779,7 @@
               <th>KHOẢNG CÁCH THỰC <br>(km)</th>
               <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
               <th>ĐỘ ƯU TIÊN</th>
-              <th>THỜI GIAN GIAO HÀNG</th>
+              <th>THỜI GIAN XUẤT KHO</th>
               <th>GIAO THEO YÊU CẦU</th>
               <th>GHI CHÚ KHÁCH HÀNG</th>
             </tr>
@@ -839,8 +839,8 @@
             },
             { text: priorityText, class: priorityClass },
             {
-              text: o.created_at
-                ? moment(o.created_at)
+              text: o.date_delivery
+                ? moment(o.date_delivery)
                     .tz("Asia/Ho_Chi_Minh")
                     .format("DD/MM/YYYY HH:mm:ss")
                 : "N/A",

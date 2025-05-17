@@ -22,7 +22,7 @@
     <style>
       body {
         font-family: Arial, sans-serif;
-        font-size: 13px;
+        font-size: 15px;
         margin: 20px;
         background-color: #f4f4f4;
       }
@@ -40,14 +40,14 @@
         padding-bottom: 10px;
       }
       .order-btn {
-        padding: 4px 4px;
+        padding: 6px 8px;
         background-color: #007bff;
         color: white;
         border: none;
         border-radius: 4px;
         cursor: pointer;
-        font-size: 10px;
-        min-width: 60px;
+        font-size: 13px;
+        min-width: 100px;
         text-align: center;
         flex-shrink: 0;
       }
@@ -55,27 +55,27 @@
         background-color: #0056b3;
       }
       .order-details {
-        font-size: 13px;
-        line-height: 1.5;
+        font-size: 15px;
+        line-height: 1.6;
       }
-      .order-details p {
-        margin: 2px 0;
+      .order-details table {
+        width: 100%;
+        border-collapse: collapse;
       }
-      .order-details label {
+      .order-details th,
+      .order-details td {
+        padding: 5px 10px;
+        vertical-align: top;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+      }
+      .order-details th {
         font-weight: bold;
         color: #4caf50;
-        margin-right: 5px;
+        width: 50%;
       }
-      .modal-content.priority-urgent {
-        background-color: #ff9999 !important;
-        color: #660000;
-      }
-      .modal-content.priority-high {
-        background-color: #ffe5e5 !important;
-        color: #804040;
-      }
-      .modal-content.priority-normal {
-        background-color: #ffffff !important;
+      .order-details td {
+        width: 50%;
       }
       .order-details .red-text {
         color: red !important;
@@ -95,7 +95,7 @@
         color: white;
         cursor: pointer;
         border-radius: 4px;
-        font-size: 13px;
+        font-size: 15px;
       }
       .pagination button:disabled {
         background-color: #ccc;
@@ -116,7 +116,7 @@
 
   <body>
     <div class="container">
-      <div id="loading" class="text-center mb-2">
+      <div id="loading" class="text-center mb-3">
         <div class="spinner-border text-primary" role="status">
           <span class="visually-hidden">Đang tải...</span>
         </div>
@@ -124,7 +124,7 @@
       </div>
       <div
         id="error"
-        class="text-danger text-center mb-2"
+        class="text-danger text-center mb-3"
         style="display: none"
       ></div>
 
@@ -139,7 +139,7 @@
         aria-labelledby="orderDetailModalLabel"
         aria-hidden="true"
       >
-        <div class="modal-dialog">
+        <div class="modal-dialog modal-lg">
           <div class="modal-content">
             <div class="modal-header">
               <h5 class="modal-title" id="orderDetailModalLabel">
@@ -172,6 +172,7 @@
     <script>
       let currentPage = 1;
       let totalPages = 1;
+      let updateInterval = null;
 
       async function fetchOrders(page = 1) {
         try {
@@ -228,26 +229,39 @@
       }
 
       function showOrderDetails(o) {
-        const now = moment().tz("Asia/Ho_Chi_Minh").toDate();
-        let [priorityText, priorityClass] = ["Bình thường", "priority-normal"];
+        const now = moment().tz("Asia/Ho_Chi_Minh");
+        let priorityText = "Bình thường";
         if (o.priority === 2) {
-          [priorityText, priorityClass] = ["Khẩn cấp", "priority-urgent"];
+          priorityText = "Khẩn cấp";
         } else if (o.priority === 1) {
-          [priorityText, priorityClass] = ["Ưu tiên cao", "priority-high"];
+          priorityText = "Ưu tiên cao";
         }
 
         const statusText = o.status === 1 ? "Ưu tiên" : "Bình thường";
-
-        const modalContent = document.querySelector(
-          "#orderDetailModal .modal-content"
-        );
-        modalContent.className = `modal-content ${priorityClass}`;
+        const oldDistanceText =
+          o.old_distance !== null ? o.old_distance.toFixed(2) + " km" : "N/A";
+        const oldTravelTimeText =
+          o.old_travel_time !== null ? o.old_travel_time + " phút" : "N/A";
+        const timeRemaining = o.delivery_deadline
+          ? Math.abs(
+              moment(o.delivery_deadline)
+                .tz("Asia/Ho_Chi_Minh")
+                .diff(now, "minutes")
+            ) +
+            (moment(o.delivery_deadline).isBefore(now)
+              ? " phút trước"
+              : " phút tới")
+          : "N/A";
+        const createdAt = o.created_at
+          ? moment(o.created_at).tz("Asia/Ho_Chi_Minh")
+          : null;
 
         const details = document.getElementById("order-details-content");
         details.innerHTML = "";
 
         const fields = [
-          { label: "Mã Đơn Hàng", text: o.id_order },
+          { label: "Mã Đơn Hàng", text: o.id_order || "N/A" },
+          { label: "Độ Ưu Tiên", text: priorityText },
           {
             label: "Địa Chỉ Giao Hàng",
             text: o.address || "N/A",
@@ -255,14 +269,14 @@
           },
           {
             label: "Địa Chỉ Hóa Đơn",
-            text: o.source_address || "N/A",
+            text: o.current_address || "N/A",
             class: "cell",
           },
           {
             label: "Khoảng Cách Quy Định",
             text:
-              o.SOKM != null && !isNaN(parseFloat(o.SOKM))
-                ? parseFloat(o.SOKM).toFixed(2) + " km"
+              o.SOKM !== null && !isNaN(o.SOKM)
+                ? o.SOKM.toFixed(2) + " km"
                 : "N/A",
             class: "red-text",
           },
@@ -276,20 +290,23 @@
             text: o.travel_time !== null ? o.travel_time + " phút" : "N/A",
           },
           {
-            label: "Ngày Xuất Kho",
-            text: o.date_delivery || "N/A",
+            label: "Địa Chỉ Trước Thay Đổi",
+            text: o.old_address || "N/A",
+            class: "cell",
           },
           {
-            label: "Ghi Chú Khách Hàng",
-            text: o.delivery_note || "Không có",
+            label: "Khoảng Cách Sau Thay Đổi Địa Chỉ",
+            text: oldDistanceText,
           },
           {
-            label: "Trạng Thái",
-            text: statusText,
+            label: "Thời Gian Giao Sau Thay Đổi Địa Chỉ",
+            text: oldTravelTimeText,
           },
+          { label: "Ngày Xuất Kho", text: o.date_delivery || "N/A" },
+          { label: "Ghi Chú Khách Hàng", text: o.delivery_note || "N/A" },
           {
-            label: "Độ Ưu Tiên",
-            text: priorityText,
+            label: "Thời Gian Phải Hoàn Thành",
+            text: o.delivery_deadline || "N/A",
           },
           {
             label: "Ngày Tạo Đơn",
@@ -299,26 +316,60 @@
                   .format("DD/MM/YYYY HH:mm:ss")
               : "N/A",
           },
-          {
-            label: "Quận/Huyện",
-            text: o.district || "N/A",
-          },
-          {
-            label: "Phường/Xã",
-            text: o.ward || "N/A",
-          },
+          { label: "Quận/Huyện", text: o.district || "N/A" },
+          { label: "Phường/Xã", text: o.ward || "N/A" },
+          { label: "Trạng Thái", text: statusText },
           {
             label: "Được Tạo Cách Đây",
-            text: o.days_old !== null ? o.days_old + " ngày" : "N/A",
+            text: `<span id="created-since-${o.id_order}">${
+              createdAt ? moment().diff(createdAt, "minutes") + " phút" : "N/A"
+            }</span>`,
+            class: "",
           },
         ];
 
-        fields.forEach((field) => {
-          const p = document.createElement("p");
-          p.innerHTML = `<label>${field.label}:</label> <span class="${
-            field.class || ""
-          }">${field.text}</span>`;
-          details.appendChild(p);
+        details.innerHTML = `
+          <table>
+            <tbody>
+              ${fields
+                .map(
+                  (field) => `
+                    <tr>
+                      <th>${field.label}</th>
+                      <td><span class="${field.class || ""}">${
+                    field.text
+                  }</span></td>
+                    </tr>
+                  `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        `;
+
+        if (createdAt) {
+          if (updateInterval) {
+            clearInterval(updateInterval);
+          }
+          updateInterval = setInterval(() => {
+            const span = document.getElementById(`created-since-${o.id_order}`);
+            if (span) {
+              const minutes = moment()
+                .tz("Asia/Ho_Chi_Minh")
+                .diff(createdAt, "minutes");
+              span.textContent = minutes + " phút";
+            } else {
+              clearInterval(updateInterval);
+            }
+          }, 1000);
+        }
+
+        // Dừng interval khi modal đóng
+        $("#orderDetailModal").on("hidden.bs.modal", function () {
+          if (updateInterval) {
+            clearInterval(updateInterval);
+            updateInterval = null;
+          }
         });
       }
 
