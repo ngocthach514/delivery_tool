@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Danh Sách Đơn Hàng</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+      integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
+      crossorigin="anonymous"
+    />
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+      integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+      crossorigin="anonymous"
+    ></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.4/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.43/moment-timezone-with-data.min.js"></script>
+
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        margin: 20px;
+        background-color: #f4f4f4;
+      }
+      .container {
+        max-width: 100%;
+        margin: 0 auto;
+      }
+      .orders-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+      .order-btn {
+        padding: 4px 4px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        min-width: 80px;
+        text-align: center;
+      }
+      .order-btn:hover {
+        background-color: #0056b3;
+      }
+      .order-details {
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .order-details p {
+        margin: 2px 0;
+      }
+      .order-details label {
+        font-weight: bold;
+        color: #4caf50;
+        margin-right: 5px;
+      }
+      .modal-content.priority-urgent {
+        background-color: #ff9999 !important;
+        color: #660000;
+      }
+      .modal-content.priority-high {
+        background-color: #ffe5e5 !important;
+        color: #804040;
+      }
+      .modal-content.priority-normal {
+        background-color: #ffffff !important;
+      }
+      .order-details .red-text {
+        color: red !important;
+        font-weight: bold;
+      }
+      .pagination {
+        display: flex;
+        justify-content: center;
+        margin-top: 20px;
+      }
+      .pagination button {
+        padding: 8px 12px;
+        margin: 0 5px;
+        border: none;
+        background-color: #4caf50;
+        color: white;
+        cursor: pointer;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+      .pagination button:disabled {
+        background-color: #ccc;
+        cursor: not-allowed;
+      }
+      #loading {
+        display: none;
+      }
+      #loading.show {
+        display: block;
+      }
+      .spinner-border {
+        width: 1.5rem;
+        height: 1.5rem;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <div id="loading" class="text-center mb-2">
+        <div class="spinner-border text-primary" role="status">
+          <span class="visually-hidden">Đang tải...</span>
+        </div>
+        Đang tải dữ liệu...
+      </div>
+      <div
+        id="error"
+        class="text-danger text-center mb-2"
+        style="display: none"
+      ></div>
+
+      <div id="orders-wrapper" class="orders-container"></div>
+      <div class="pagination" id="pagination"></div>
+
+      <!-- Modal để hiển thị chi tiết đơn hàng -->
+      <div
+        class="modal fade"
+        id="orderDetailModal"
+        tabindex="-1"
+        aria-labelledby="orderDetailModalLabel"
+        aria-hidden="true"
+      >
+        <div class="modal-dialog">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="orderDetailModalLabel">
+                Chi Tiết Đơn Hàng
+              </h5>
+              <button
+                type="button"
+                class="btn-close"
+                data-bs-dismiss="modal"
+                aria-label="Close"
+              ></button>
+            </div>
+            <div class="modal-body">
+              <div id="order-details-content" class="order-details"></div>
+            </div>
+            <div class="modal-footer">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                data-bs-dismiss="modal"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let currentPage = 1;
+      let totalPages = 1;
+
+      async function fetchOrders(page = 1) {
+        try {
+          $("#loading").addClass("show");
+          $("#error").hide();
+
+          const res = await fetch(`/grouped-orders2?page=${page}`);
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(
+              `Không thể tải đơn hàng: ${
+                errorData.error || "Lỗi server không xác định"
+              }`
+            );
+          }
+          const data = await res.json();
+
+          totalPages = data.totalPages || 1;
+          currentPage = data.currentPage || 1;
+          const orders = data.orders ? data.orders.slice(0, 20) : [];
+          renderOrders(orders);
+          renderPagination();
+        } catch (err) {
+          console.error("Lỗi trong fetchOrders:", err.message);
+          $("#error")
+            .text("Lỗi khi tải đơn hàng: " + err.message)
+            .show();
+          $("#orders-wrapper").html("");
+          $("#pagination").hide();
+        } finally {
+          $("#loading").removeClass("show");
+        }
+      }
+
+      function renderOrders(orders) {
+        const wrapper = document.getElementById("orders-wrapper");
+        wrapper.innerHTML = "";
+        if (!orders || orders.length === 0) {
+          wrapper.innerHTML =
+            "<p class='text-center'>Không có đơn hàng nào để hiển thị.</p>";
+          return;
+        }
+
+        orders.forEach((o) => {
+          const btn = document.createElement("button");
+          btn.className = "order-btn";
+          btn.textContent = o.id_order;
+          btn.setAttribute("data-bs-toggle", "modal");
+          btn.setAttribute("data-bs-target", "#orderDetailModal");
+          btn.onclick = () => showOrderDetails(o);
+
+          wrapper.appendChild(btn);
+        });
+      }
+
+      function showOrderDetails(o) {
+        const now = moment().tz("Asia/Ho_Chi_Minh").toDate();
+        const deadline = o.delivery_deadline
+          ? moment(o.delivery_deadline).tz("Asia/Ho_Chi_Minh").toDate()
+          : null;
+        const timeToDeadline = deadline
+          ? (deadline - now) / (1000 * 60)
+          : null;
+        let [priorityText, priorityClass] = ["Bình thường", "priority-normal"];
+        if (o.priority === 2) {
+          [priorityText, priorityClass] = ["Khẩn cấp", "priority-urgent"];
+        } else if (o.priority === 1) {
+          [priorityText, priorityClass] = ["Ưu tiên cao", "priority-high"];
+        }
+
+        const modalContent = document.querySelector(
+          "#orderDetailModal .modal-content"
+        );
+        modalContent.className = `modal-content ${priorityClass}`;
+
+        const details = document.getElementById("order-details-content");
+        details.innerHTML = "";
+
+        const fields = [
+          { label: "Mã Đơn", text: o.id_order },
+          {
+            label: "Địa Chỉ Giao Hàng / Địa Chỉ Hóa Đơn",
+            text: `ĐCGH: ${o.address || "N/A"}\nĐCHĐ: ${
+              o.source_address || "N/A"
+            }`,
+            class: "cell",
+          },
+          {
+            label: "Khoảng Cách Quy Định (km)",
+            text:
+              o.SOKM != null && !isNaN(parseFloat(o.SOKM))
+                ? parseFloat(o.SOKM).toFixed(2)
+                : "N/A",
+            class: "red-text",
+          },
+          {
+            label: "Khoảng Cách Thực (km)",
+            text: o.distance !== null ? o.distance.toFixed(2) : "N/A",
+            class: "red-text",
+          },
+          {
+            label: "Thời Gian Di Chuyển (phút)",
+            text: o.travel_time !== null ? o.travel_time : "N/A",
+          },
+          { label: "Độ Ưu Tiên", text: priorityText },
+          {
+            label: "Thời Gian Giao Hàng",
+            text: o.created_at
+              ? moment(o.created_at)
+                  .tz("Asia/Ho_Chi_Minh")
+                  .format("DD/MM/YYYY HH:mm:ss")
+              : "N/A",
+          },
+          {
+            label: "Giao Theo Yêu Cầu",
+            text: o.delivery_deadline
+              ? moment(o.delivery_deadline)
+                  .tz("Asia/Ho_Chi_Minh")
+                  .format("DD/MM/YYYY HH:mm:ss")
+              : "Không có",
+          },
+          {
+            label: "Ghi Chú Khách Hàng",
+            text: o.delivery_note || "Không có",
+          },
+        ];
+
+        fields.forEach((field) => {
+          const p = document.createElement("p");
+          p.innerHTML = `<label>${field.label}:</label> <span class="${
+            field.class || ""
+          }">${field.text}</span>`;
+          details.appendChild(p);
+        });
+      }
+
+      function renderPagination() {
+        const container = document.getElementById("pagination");
+        container.innerHTML = "";
+        container.style.display = "flex";
+
+        const prev = document.createElement("button");
+        prev.textContent = "Trang trước";
+        prev.disabled = currentPage === 1;
+        prev.onclick = () => {
+          currentPage = Math.max(1, currentPage - 1);
+          fetchOrders(currentPage);
+        };
+
+        const next = document.createElement("button");
+        next.textContent = "Trang sau";
+        next.disabled = currentPage >= totalPages;
+        next.onclick = () => {
+          currentPage = currentPage + 1;
+          fetchOrders(currentPage);
+        };
+
+        const info = document.createElement("span");
+        info.textContent = ` Trang ${currentPage} / ${totalPages} `;
+        info.style.margin = "0 10px";
+        info.style.alignSelf = "center";
+
+        container.appendChild(prev);
+        container.appendChild(info);
+        container.appendChild(next);
+      }
+
+      // Tải dữ liệu khi trang được mở
+      fetchOrders(currentPage);
+    </script>
+  </body>
+</html>

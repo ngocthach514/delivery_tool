@@ -53,6 +53,7 @@ const dbConfig = {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const API_1 = process.env.API_1_URL;
 const API_2_BASE = process.env.API_2_BASE_URL;
+const SLUG = process.env.SLUG;
 const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
 const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
 
@@ -345,6 +346,119 @@ async function findTransportCompany(address) {
   }
 }
 
+// async function fetchAndSaveOrders() {
+//   const startTime = Date.now();
+//   try {
+//     let api2RequestCount = 0;
+//     const response1 = await axios.get(API_1);
+//     const orders = response1.data;
+//     console.log("Số lượng đơn hàng từ API 1:", orders.length);
+
+//     if (orders.length === lastApiOrderCount && orders.length > 0) {
+//       console.log("Số lượng đơn hàng không thay đổi, bỏ qua gọi API_2.");
+//       console.log("Tổng số yêu cầu API_2:", api2RequestCount);
+//       return [];
+//     }
+
+//     lastApiOrderCount = orders.length;
+
+//     const limit = pLimit(10);
+//     const api2Promises = orders.map((order) =>
+//       limit(() => {
+//         api2RequestCount++;
+//         return axios
+//           .get(`${API_2_BASE}?qc=${order.MaPX}`)
+//           .then((res) => ({
+//             MaPX: order.MaPX,
+//             DcGiaohang: res.data.DcGiaohang || "",
+//             Tinhtranggiao: res.data.Tinhtranggiao || "",
+//             SOKM: order.SOKM || null,
+//             isEmpty: !res.data.DcGiaohang,
+//           }))
+//           .catch((err) => {
+//             console.error(
+//               `Lỗi khi gọi API 2 cho MaPX ${order.MaPX}:`,
+//               err.message
+//             );
+//             return null;
+//           });
+//       })
+//     );
+
+//     const settledResults = await Promise.allSettled(api2Promises);
+//     const results = settledResults
+//       .filter(
+//         (result) => result.status === "fulfilled" && result.value !== null
+//       )
+//       .map((result) => result.value);
+
+//     console.log("Tổng số yêu cầu API_2:", api2RequestCount);
+
+//     const pendingOrders = results.filter(
+//       (order) => order.Tinhtranggiao === "Chờ xác nhận giao/lấy hàng"
+//     );
+//     console.log("Số lượng đơn hàng chưa giao:", pendingOrders.length);
+
+//     if (pendingOrders.length === 0) {
+//       console.log(
+//         `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
+//       );
+//       return [];
+//     }
+
+//     const connection = await mysql.createConnection(dbConfig);
+//     const values = pendingOrders.map((order) => [
+//       order.MaPX,
+//       order.DcGiaohang,
+//       order.Tinhtranggiao,
+//       order.SOKM,
+//       order.Ghichu,
+//       moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
+//     ]);
+//     const [insertResult] = await connection.query(
+//       `
+//       INSERT INTO orders (id_order, address, status, SOKM, delivery_note, created_at)
+//       VALUES ?
+//       ON DUPLICATE KEY UPDATE
+//       address = VALUES(address),
+//       status = VALUES(status),
+//       SOKM = VALUES(SOKM),
+//       delivery_note = VALUES(delivery_note),
+//       created_at = VALUES(created_at)
+//       `,
+//       [values]
+//     );
+//     console.log(
+//       "Số dòng ảnh hưởng khi lưu vào cơ sở dữ liệu (orders):",
+//       insertResult.affectedRows
+//     );
+
+//     const [savedOrders] = await connection.query(
+//       `
+//       SELECT id_order
+//       FROM orders
+//       WHERE id_order IN (?)
+//         AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+//         AND status = 'Chờ xác nhận giao/lấy hàng'
+//       `,
+//       [pendingOrders.map((order) => order.MaPX)]
+//     );
+//     const savedMaPX = new Set(savedOrders.map((order) => order.id_order));
+
+//     const validResults = pendingOrders.filter((order) =>
+//       savedMaPX.has(order.MaPX)
+//     );
+//     console.log("Số lượng đơn hàng mới và hợp lệ:", validResults.length);
+//     await connection.end();
+//     console.log(
+//       `fetchAndSaveOrders thực thi trong ${Date.now() - startTime}ms`
+//     );
+//     return validResults;
+//   } catch (error) {
+//     console.error("Lỗi trong fetchAndSaveOrders:", error.message);
+//     throw error;
+//   }
+// }
 async function fetchAndSaveOrders() {
   const startTime = Date.now();
   try {
@@ -361,17 +475,18 @@ async function fetchAndSaveOrders() {
 
     lastApiOrderCount = orders.length;
 
-    const limit = pLimit(10);
+    const limit = pLimit(5);
     const api2Promises = orders.map((order) =>
       limit(() => {
         api2RequestCount++;
         return axios
-          .get(`${API_2_BASE}?qc=${order.MaPX}`)
+          .get(`${API_2_BASE}?${SLUG}=${order.MaPX}`)
           .then((res) => ({
             MaPX: order.MaPX,
             DcGiaohang: res.data.DcGiaohang || "",
             Tinhtranggiao: res.data.Tinhtranggiao || "",
             SOKM: order.SOKM || null,
+            Ngayxuatkho: order.Ngayxuatkho || null,
             isEmpty: !res.data.DcGiaohang,
           }))
           .catch((err) => {
@@ -406,23 +521,27 @@ async function fetchAndSaveOrders() {
     }
 
     const connection = await mysql.createConnection(dbConfig);
-    const values = pendingOrders.map((order) => [
-      order.MaPX,
-      order.DcGiaohang,
-      order.Tinhtranggiao,
-      order.SOKM,
-      order.Ghichu,
-      moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
-    ]);
+    const values = pendingOrders.map((order) => {
+      return [
+        order.MaPX,
+        order.DcGiaohang,
+        order.Tinhtranggiao,
+        order.SOKM,
+        order.Ghichu,
+        order.Ngayxuatkho,
+        moment().tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss"),
+      ];
+    });
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, created_at)
+      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at)
       VALUES ?
       ON DUPLICATE KEY UPDATE
       address = VALUES(address),
       status = VALUES(status),
       SOKM = VALUES(SOKM),
       delivery_note = VALUES(delivery_note),
+      date_delivery = VALUES(date_delivery),
       created_at = VALUES(created_at)
       `,
       [values]
@@ -1024,6 +1143,7 @@ async function groupOrders(page = 1, filterDate = null) {
         o.SOKM,
         o.priority,
         o.delivery_deadline,
+        o.date_delivery,
         o.delivery_note,
         o.address AS source_address,
         CASE 
@@ -1095,6 +1215,155 @@ async function groupOrders(page = 1, filterDate = null) {
             .tz("Asia/Ho_Chi_Minh")
             .format("YYYY-MM-DD HH:mm:ss")
         : null,
+      date_delivery: row.date_delivery,
+      delivery_note: row.delivery_note,
+      source_address: row.source_address,
+      district: row.district || null,
+      ward: row.ward || null,
+      days_old: row.days_old,
+    }));
+
+    await connection.end();
+
+    return {
+      totalOrders,
+      totalPages,
+      currentPage: page,
+      lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
+      orders: parsedResults,
+    };
+  } catch (error) {
+    console.error("Lỗi trong groupOrders:", error.message, error.stack);
+    throw error;
+  }
+}
+
+async function groupOrders2(page = 1, filterDate = null) {
+  const startTime = Date.now();
+  try {
+    const connection = await mysql.createConnection(dbConfig);
+    const pageSize = 20;
+    const offset = (page - 1) * pageSize;
+
+    if (!Number.isInteger(page) || page < 1) {
+      throw new Error("Page phải là số nguyên dương");
+    }
+
+    let dateCondition = "";
+    let queryParams = [];
+
+    if (filterDate) {
+      if (!moment(filterDate, "YYYY-MM-DD", true).isValid()) {
+        throw new Error("Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD");
+      }
+      dateCondition = "DATE(oa.created_at) = ?";
+      queryParams.push(filterDate);
+    }
+
+    const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
+
+    const [totalResult] = await connection.execute(
+      `
+      SELECT COUNT(*) as total
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        ${dateCondition}
+      `,
+      queryParams
+    );
+
+    const totalOrders = totalResult[0].total;
+    const totalPages = Math.ceil(totalOrders / pageSize);
+
+    const query = `
+      SELECT 
+        oa.id_order,
+        oa.address,
+        oa.source,
+        oa.distance,
+        oa.travel_time,
+        oa.status,
+        oa.created_at,
+        oa.district,
+        oa.ward,
+        o.SOKM,
+        o.priority,
+        o.delivery_deadline,
+        o.date_delivery,
+        o.delivery_note,
+        o.address AS source_address,
+        CASE 
+          WHEN DATE(oa.created_at) <= CURDATE() - INTERVAL 2 DAY THEN 2
+          WHEN DATE(oa.created_at) = CURDATE() - INTERVAL 1 DAY THEN 1 
+          ELSE 0 
+        END AS days_old
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        ${dateCondition}
+      ORDER BY
+        CASE
+          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
+          WHEN o.priority = 2 THEN 0
+          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
+          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
+          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
+          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
+          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
+          WHEN oa.status = 1 AND o.priority = 0 THEN 10
+          WHEN oa.status = 1 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
+          WHEN oa.status = 0 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
+          WHEN oa.status = 0 AND o.priority = 0 THEN 13
+          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
+          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
+          ELSE 16
+        END ASC,
+        CASE 
+          WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
+          ELSE 1
+        END ASC,
+        CASE 
+          WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
+          ELSE 999999
+        END ASC,
+        COALESCE(oa.distance, 999999) ASC,
+        COALESCE(oa.travel_time, 999999) ASC,
+        oa.created_at ASC
+      LIMIT ${pageSize} OFFSET ${offset}
+    `;
+
+    const [results] = await connection.execute(query, queryParams);
+
+    const parsedResults = results.map((row) => ({
+      id_order: row.id_order,
+      address: row.address,
+      source: row.source,
+      distance: row.distance,
+      travel_time: row.travel_time,
+      status: row.status,
+      created_at: row.created_at
+        ? moment(row.created_at)
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      SOKM: row.SOKM,
+      priority: row.priority,
+      delivery_deadline: row.delivery_deadline
+        ? moment(row.delivery_deadline)
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      date_delivery: row.date_delivery,
       delivery_note: row.delivery_note,
       source_address: row.source_address,
       district: row.district || null,
@@ -1809,6 +2078,29 @@ app.get("/grouped-orders", async (req, res) => {
     res.status(200).json(groupedOrders);
   } catch (error) {
     console.error("Lỗi trong /grouped-orders:", error.message, error.stack);
+    res.status(500).json({ error: "Lỗi server", details: error.message });
+  }
+});
+
+app.get("/grouped-orders2", async (req, res) => {
+  try {
+    console.time("grouped-orders2");
+    const page = parseInt(req.query.page) || 1;
+    const filterDate = req.query.date || null;
+
+    if (isNaN(page) || page < 1) {
+      return res.status(400).json({ error: "Page phải là số nguyên dương" });
+    }
+
+    console.log(
+      `Gọi groupOrders với page: ${page}, date: ${filterDate || "all"}`
+    );
+    const groupedOrders = await groupOrders2(page, filterDate);
+
+    console.timeEnd("grouped-orders2");
+    res.status(200).json(groupedOrders);
+  } catch (error) {
+    console.error("Lỗi trong /grouped-orders2:", error.message, error.stack);
     res.status(500).json({ error: "Lỗi server", details: error.message });
   }
 });
