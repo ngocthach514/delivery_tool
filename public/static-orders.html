@@ -32,9 +32,12 @@
       }
       .orders-container {
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 10px;
         margin-bottom: 20px;
+        overflow-x: auto;
+        white-space: nowrap;
+        padding-bottom: 10px;
       }
       .order-btn {
         padding: 4px 4px;
@@ -43,9 +46,10 @@
         border: none;
         border-radius: 4px;
         cursor: pointer;
-        font-size: 12px;
-        min-width: 80px;
+        font-size: 10px;
+        min-width: 60px;
         text-align: center;
+        flex-shrink: 0;
       }
       .order-btn:hover {
         background-color: #0056b3;
@@ -80,6 +84,7 @@
       .pagination {
         display: flex;
         justify-content: center;
+        align-items: center;
         margin-top: 20px;
       }
       .pagination button {
@@ -224,18 +229,14 @@
 
       function showOrderDetails(o) {
         const now = moment().tz("Asia/Ho_Chi_Minh").toDate();
-        const deadline = o.delivery_deadline
-          ? moment(o.delivery_deadline).tz("Asia/Ho_Chi_Minh").toDate()
-          : null;
-        const timeToDeadline = deadline
-          ? (deadline - now) / (1000 * 60)
-          : null;
         let [priorityText, priorityClass] = ["Bình thường", "priority-normal"];
         if (o.priority === 2) {
           [priorityText, priorityClass] = ["Khẩn cấp", "priority-urgent"];
         } else if (o.priority === 1) {
           [priorityText, priorityClass] = ["Ưu tiên cao", "priority-high"];
         }
+
+        const statusText = o.status === 1 ? "Ưu tiên" : "Bình thường";
 
         const modalContent = document.querySelector(
           "#orderDetailModal .modal-content"
@@ -246,34 +247,52 @@
         details.innerHTML = "";
 
         const fields = [
-          { label: "Mã Đơn", text: o.id_order },
+          { label: "Mã Đơn Hàng", text: o.id_order },
           {
-            label: "Địa Chỉ Giao Hàng / Địa Chỉ Hóa Đơn",
-            text: `ĐCGH: ${o.address || "N/A"}\nĐCHĐ: ${
-              o.source_address || "N/A"
-            }`,
+            label: "Địa Chỉ Giao Hàng",
+            text: o.address || "N/A",
             class: "cell",
           },
           {
-            label: "Khoảng Cách Quy Định (km)",
+            label: "Địa Chỉ Hóa Đơn",
+            text: o.source_address || "N/A",
+            class: "cell",
+          },
+          {
+            label: "Khoảng Cách Quy Định",
             text:
               o.SOKM != null && !isNaN(parseFloat(o.SOKM))
-                ? parseFloat(o.SOKM).toFixed(2)
+                ? parseFloat(o.SOKM).toFixed(2) + " km"
                 : "N/A",
             class: "red-text",
           },
           {
-            label: "Khoảng Cách Thực (km)",
-            text: o.distance !== null ? o.distance.toFixed(2) : "N/A",
+            label: "Khoảng Cách Thực",
+            text: o.distance !== null ? o.distance.toFixed(2) + " km" : "N/A",
             class: "red-text",
           },
           {
-            label: "Thời Gian Di Chuyển (phút)",
-            text: o.travel_time !== null ? o.travel_time : "N/A",
+            label: "Thời Gian Giao",
+            text: o.travel_time !== null ? o.travel_time + " phút" : "N/A",
           },
-          { label: "Độ Ưu Tiên", text: priorityText },
           {
-            label: "Thời Gian Giao Hàng",
+            label: "Ngày Xuất Kho",
+            text: o.date_delivery || "N/A",
+          },
+          {
+            label: "Ghi Chú Khách Hàng",
+            text: o.delivery_note || "Không có",
+          },
+          {
+            label: "Trạng Thái",
+            text: statusText,
+          },
+          {
+            label: "Độ Ưu Tiên",
+            text: priorityText,
+          },
+          {
+            label: "Ngày Tạo Đơn",
             text: o.created_at
               ? moment(o.created_at)
                   .tz("Asia/Ho_Chi_Minh")
@@ -281,16 +300,16 @@
               : "N/A",
           },
           {
-            label: "Giao Theo Yêu Cầu",
-            text: o.delivery_deadline
-              ? moment(o.delivery_deadline)
-                  .tz("Asia/Ho_Chi_Minh")
-                  .format("DD/MM/YYYY HH:mm:ss")
-              : "Không có",
+            label: "Quận/Huyện",
+            text: o.district || "N/A",
           },
           {
-            label: "Ghi Chú Khách Hàng",
-            text: o.delivery_note || "Không có",
+            label: "Phường/Xã",
+            text: o.ward || "N/A",
+          },
+          {
+            label: "Được Tạo Cách Đây",
+            text: o.days_old !== null ? o.days_old + " ngày" : "N/A",
           },
         ];
 
@@ -307,6 +326,12 @@
         const container = document.getElementById("pagination");
         container.innerHTML = "";
         container.style.display = "flex";
+
+        const back = document.createElement("button");
+        back.textContent = "Quay lại trang chính";
+        back.onclick = () => {
+          window.location.href = "/index.html";
+        };
 
         const prev = document.createElement("button");
         prev.textContent = "Trang trước";
@@ -329,6 +354,7 @@
         info.style.margin = "0 10px";
         info.style.alignSelf = "center";
 
+        container.appendChild(back);
         container.appendChild(prev);
         container.appendChild(info);
         container.appendChild(next);
