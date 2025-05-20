@@ -1107,7 +1107,6 @@ async function groupOrders(page = 1, filterDate = null) {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const pageSize = 10;
-    const offset = (page - 1) * pageSize;
 
     if (!Number.isInteger(page) || page < 1) {
       throw new Error("Page phải là số nguyên dương");
@@ -1127,6 +1126,7 @@ async function groupOrders(page = 1, filterDate = null) {
 
     const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
 
+    // Lấy tổng số đơn hàng
     const [totalResult] = await connection.execute(
       `
       SELECT COUNT(*) as total
@@ -1142,6 +1142,7 @@ async function groupOrders(page = 1, filterDate = null) {
     const totalOrders = totalResult[0].total;
     const totalPages = Math.ceil(totalOrders / pageSize);
 
+    // Lấy toàn bộ dữ liệu mà không áp dụng LIMIT và OFFSET
     const query = `
       SELECT 
         oa.id_order,
@@ -1173,47 +1174,12 @@ async function groupOrders(page = 1, filterDate = null) {
       WHERE oa.address IS NOT NULL 
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
         ${dateCondition}
-      ORDER BY
-        CASE
-          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
-          WHEN o.priority = 2 THEN 0
-          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
-          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
-          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
-          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
-          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
-          WHEN oa.status = 1 AND o.priority = 0 THEN 10
-          WHEN oa.status = 1 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
-          WHEN oa.status = 0 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
-          WHEN oa.status = 0 AND o.priority = 0 THEN 13
-          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
-          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
-          ELSE 16
-        END ASC,
-        CASE 
-          WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
-          ELSE 1
-        END ASC,
-        CASE 
-          WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
-          ELSE 999999
-        END ASC,
-        COALESCE(oa.distance, 999999) ASC,
-        COALESCE(oa.travel_time, 999999) ASC,
-        COALESCE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s'), '9999-12-31 23:59:59') ASC,
-        o.id_order ASC
-      LIMIT ${pageSize} OFFSET ${offset}
     `;
 
     const [results] = await connection.execute(query, queryParams);
+    await connection.end();
 
+    // Chuyển đổi kết quả thành định dạng mong muốn
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
       address: row.address || "N/A",
@@ -1254,17 +1220,244 @@ async function groupOrders(page = 1, filterDate = null) {
         row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
-    await connection.end();
+    // Sắp xếp toàn bộ dữ liệu trong JavaScript
+    const sortedResults = parsedResults.sort((a, b) => {
+      // Tiêu chí 1: Điểm ưu tiên chính (Priority Score)
+      let priorityA, priorityB;
+
+      if (
+        !a.district ||
+        !a.ward ||
+        a.distance === null ||
+        a.travel_time === null
+      ) {
+        priorityA = 100;
+      } else if (a.priority === 2) {
+        priorityA = 0;
+      } else if (
+        a.status === 1 &&
+        a.priority === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 1;
+      } else if (
+        a.days_old === 2 &&
+        a.status === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 2;
+      } else if (
+        a.days_old === 2 &&
+        a.status === 0 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 3;
+      } else if (
+        a.days_old === 1 &&
+        a.status === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 4;
+      } else if (
+        a.days_old === 1 &&
+        a.status === 0 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 5;
+      } else if (a.status === 1 && a.priority === 0) {
+        priorityA = 10;
+      } else if (
+        a.status === 1 &&
+        a.priority === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 11;
+      } else if (
+        a.status === 0 &&
+        a.priority === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 12;
+      } else if (a.status === 0 && a.priority === 0) {
+        priorityA = 13;
+      } else if (
+        a.days_old === 2 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 14;
+      } else if (
+        a.days_old === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 15;
+      } else {
+        priorityA = 16;
+      }
+
+      if (
+        !b.district ||
+        !b.ward ||
+        b.distance === null ||
+        b.travel_time === null
+      ) {
+        priorityB = 100;
+      } else if (b.priority === 2) {
+        priorityB = 0;
+      } else if (
+        b.status === 1 &&
+        b.priority === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 1;
+      } else if (
+        b.days_old === 2 &&
+        b.status === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 2;
+      } else if (
+        b.days_old === 2 &&
+        b.status === 0 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 3;
+      } else if (
+        b.days_old === 1 &&
+        b.status === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 4;
+      } else if (
+        b.days_old === 1 &&
+        b.status === 0 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 5;
+      } else if (b.status === 1 && b.priority === 0) {
+        priorityB = 10;
+      } else if (
+        b.status === 1 &&
+        b.priority === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 11;
+      } else if (
+        b.status === 0 &&
+        b.priority === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 12;
+      } else if (b.status === 0 && b.priority === 0) {
+        priorityB = 13;
+      } else if (
+        b.days_old === 2 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 14;
+      } else if (
+        b.days_old === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 15;
+      } else {
+        priorityB = 16;
+      }
+
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      // Tiêu chí 2: Delivery Deadline trong ngày hiện tại
+      const isDeadlineTodayA =
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSame(moment(), "day")
+          ? 0
+          : 1;
+      const isDeadlineTodayB =
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSame(moment(), "day")
+          ? 0
+          : 1;
+      if (isDeadlineTodayA !== isDeadlineTodayB) {
+        return isDeadlineTodayA - isDeadlineTodayB;
+      }
+
+      // Tiêu chí 3: Khoảng thời gian đến Delivery Deadline
+      const timeToDeadlineA = a.delivery_deadline
+        ? moment(a.delivery_deadline).diff(moment(), "minutes")
+        : 999999;
+      const timeToDeadlineB = b.delivery_deadline
+        ? moment(b.delivery_deadline).diff(moment(), "minutes")
+        : 999999;
+      if (timeToDeadlineA !== timeToDeadlineB) {
+        return timeToDeadlineA - timeToDeadlineB;
+      }
+
+      // Tiêu chí 4: Distance
+      const distanceA = a.distance !== null ? a.distance : 999999;
+      const distanceB = b.distance !== null ? b.distance : 999999;
+      if (distanceA !== distanceB) {
+        return distanceA - distanceB;
+      }
+
+      // Tiêu chí 5: Travel Time
+      const travelTimeA = a.travel_time !== null ? a.travel_time : 999999;
+      const travelTimeB = b.travel_time !== null ? b.travel_time : 999999;
+      if (travelTimeA !== travelTimeB) {
+        return travelTimeA - travelTimeB;
+      }
+
+      // Tiêu chí 6: Date Delivery
+      const dateDeliveryA = a.date_delivery
+        ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
+          ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss")
+          : moment("9999-12-31 23:59:59")
+        : moment("9999-12-31 23:59:59");
+      const dateDeliveryB = b.date_delivery
+        ? moment(b.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
+          ? moment(b.date_delivery, "DD/MM/YYYY HH:mm:ss")
+          : moment("9999-12-31 23:59:59")
+        : moment("9999-12-31 23:59:59");
+      if (!dateDeliveryA.isSame(dateDeliveryB)) {
+        return dateDeliveryA.diff(dateDeliveryB);
+      }
+
+      // Tiêu chí 7: id_order
+      return a.id_order.localeCompare(b.id_order);
+    });
+
+    // Áp dụng phân trang sau khi đã sắp xếp toàn bộ dữ liệu
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedResults = sortedResults.slice(startIndex, endIndex);
 
     return {
       totalOrders,
       totalPages,
       currentPage: page,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
-      orders: parsedResults,
+      orders: paginatedResults,
     };
   } catch (error) {
-    console.error("Lỗi trong groupOrders2:", error.message, error.stack);
+    console.error("Lỗi trong groupOrders:", error.message, error.stack);
     throw error;
   }
 }
@@ -1274,7 +1467,6 @@ async function groupOrders2(page = 1, filterDate = null) {
   try {
     const connection = await mysql.createConnection(dbConfig);
     const pageSize = 20;
-    const offset = (page - 1) * pageSize;
 
     if (!Number.isInteger(page) || page < 1) {
       throw new Error("Page phải là số nguyên dương");
@@ -1294,6 +1486,7 @@ async function groupOrders2(page = 1, filterDate = null) {
 
     const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
 
+    // Lấy tổng số đơn hàng
     const [totalResult] = await connection.execute(
       `
       SELECT COUNT(*) as total
@@ -1309,6 +1502,7 @@ async function groupOrders2(page = 1, filterDate = null) {
     const totalOrders = totalResult[0].total;
     const totalPages = Math.ceil(totalOrders / pageSize);
 
+    // Lấy toàn bộ dữ liệu mà không áp dụng LIMIT và OFFSET
     const query = `
       SELECT 
         oa.id_order,
@@ -1340,47 +1534,12 @@ async function groupOrders2(page = 1, filterDate = null) {
       WHERE oa.address IS NOT NULL 
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
         ${dateCondition}
-      ORDER BY
-        CASE
-          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
-          WHEN o.priority = 2 THEN 0
-          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
-          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
-          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
-          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
-          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
-               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
-          WHEN oa.status = 1 AND o.priority = 0 THEN 10
-          WHEN oa.status = 1 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
-          WHEN oa.status = 0 AND o.priority = 1 
-               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
-          WHEN oa.status = 0 AND o.priority = 0 THEN 13
-          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
-          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
-          ELSE 16
-        END ASC,
-        CASE 
-          WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
-          ELSE 1
-        END ASC,
-        CASE 
-          WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
-          ELSE 999999
-        END ASC,
-        COALESCE(oa.distance, 999999) ASC,
-        COALESCE(oa.travel_time, 999999) ASC,
-        COALESCE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s'), '9999-12-31 23:59:59') ASC,
-        o.id_order ASC
-      LIMIT ${pageSize} OFFSET ${offset}
     `;
 
     const [results] = await connection.execute(query, queryParams);
+    await connection.end();
 
+    // Chuyển đổi kết quả thành định dạng mong muốn
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
       address: row.address || "N/A",
@@ -1421,17 +1580,244 @@ async function groupOrders2(page = 1, filterDate = null) {
         row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
-    await connection.end();
+    // Sắp xếp toàn bộ dữ liệu trong JavaScript
+    const sortedResults = parsedResults.sort((a, b) => {
+      // Tiêu chí 1: Điểm ưu tiên chính (Priority Score)
+      let priorityA, priorityB;
+
+      if (
+        !a.district ||
+        !a.ward ||
+        a.distance === null ||
+        a.travel_time === null
+      ) {
+        priorityA = 100;
+      } else if (a.priority === 2) {
+        priorityA = 0;
+      } else if (
+        a.status === 1 &&
+        a.priority === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 1;
+      } else if (
+        a.days_old === 2 &&
+        a.status === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 2;
+      } else if (
+        a.days_old === 2 &&
+        a.status === 0 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 3;
+      } else if (
+        a.days_old === 1 &&
+        a.status === 1 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 4;
+      } else if (
+        a.days_old === 1 &&
+        a.status === 0 &&
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityA = 5;
+      } else if (a.status === 1 && a.priority === 0) {
+        priorityA = 10;
+      } else if (
+        a.status === 1 &&
+        a.priority === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 11;
+      } else if (
+        a.status === 0 &&
+        a.priority === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 12;
+      } else if (a.status === 0 && a.priority === 0) {
+        priorityA = 13;
+      } else if (
+        a.days_old === 2 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 14;
+      } else if (
+        a.days_old === 1 &&
+        (!a.delivery_deadline ||
+          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityA = 15;
+      } else {
+        priorityA = 16;
+      }
+
+      if (
+        !b.district ||
+        !b.ward ||
+        b.distance === null ||
+        b.travel_time === null
+      ) {
+        priorityB = 100;
+      } else if (b.priority === 2) {
+        priorityB = 0;
+      } else if (
+        b.status === 1 &&
+        b.priority === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 1;
+      } else if (
+        b.days_old === 2 &&
+        b.status === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 2;
+      } else if (
+        b.days_old === 2 &&
+        b.status === 0 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 3;
+      } else if (
+        b.days_old === 1 &&
+        b.status === 1 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 4;
+      } else if (
+        b.days_old === 1 &&
+        b.status === 0 &&
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSameOrBefore(moment().add(2, "hours"))
+      ) {
+        priorityB = 5;
+      } else if (b.status === 1 && b.priority === 0) {
+        priorityB = 10;
+      } else if (
+        b.status === 1 &&
+        b.priority === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 11;
+      } else if (
+        b.status === 0 &&
+        b.priority === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 12;
+      } else if (b.status === 0 && b.priority === 0) {
+        priorityB = 13;
+      } else if (
+        b.days_old === 2 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 14;
+      } else if (
+        b.days_old === 1 &&
+        (!b.delivery_deadline ||
+          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+      ) {
+        priorityB = 15;
+      } else {
+        priorityB = 16;
+      }
+
+      if (priorityA !== priorityB) {
+        return priorityA - priorityB;
+      }
+
+      // Tiêu chí 2: Delivery Deadline trong ngày hiện tại
+      const isDeadlineTodayA =
+        a.delivery_deadline &&
+        moment(a.delivery_deadline).isSame(moment(), "day")
+          ? 0
+          : 1;
+      const isDeadlineTodayB =
+        b.delivery_deadline &&
+        moment(b.delivery_deadline).isSame(moment(), "day")
+          ? 0
+          : 1;
+      if (isDeadlineTodayA !== isDeadlineTodayB) {
+        return isDeadlineTodayA - isDeadlineTodayB;
+      }
+
+      // Tiêu chí 3: Khoảng thời gian đến Delivery Deadline
+      const timeToDeadlineA = a.delivery_deadline
+        ? moment(a.delivery_deadline).diff(moment(), "minutes")
+        : 999999;
+      const timeToDeadlineB = b.delivery_deadline
+        ? moment(b.delivery_deadline).diff(moment(), "minutes")
+        : 999999;
+      if (timeToDeadlineA !== timeToDeadlineB) {
+        return timeToDeadlineA - timeToDeadlineB;
+      }
+
+      // Tiêu chí 4: Distance
+      const distanceA = a.distance !== null ? a.distance : 999999;
+      const distanceB = b.distance !== null ? b.distance : 999999;
+      if (distanceA !== distanceB) {
+        return distanceA - distanceB;
+      }
+
+      // Tiêu chí 5: Travel Time
+      const travelTimeA = a.travel_time !== null ? a.travel_time : 999999;
+      const travelTimeB = b.travel_time !== null ? b.travel_time : 999999;
+      if (travelTimeA !== travelTimeB) {
+        return travelTimeA - travelTimeB;
+      }
+
+      // Tiêu chí 6: Date Delivery
+      const dateDeliveryA = a.date_delivery
+        ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
+          ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss")
+          : moment("9999-12-31 23:59:59")
+        : moment("9999-12-31 23:59:59");
+      const dateDeliveryB = b.date_delivery
+        ? moment(b.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
+          ? moment(b.date_delivery, "DD/MM/YYYY HH:mm:ss")
+          : moment("9999-12-31 23:59:59")
+        : moment("9999-12-31 23:59:59");
+      if (!dateDeliveryA.isSame(dateDeliveryB)) {
+        return dateDeliveryA.diff(dateDeliveryB);
+      }
+
+      // Tiêu chí 7: id_order
+      return a.id_order.localeCompare(b.id_order);
+    });
+
+    // Áp dụng phân trang sau khi đã sắp xếp toàn bộ dữ liệu
+    const startIndex = (page - 1) * pageSize;
+    const endIndex = startIndex + pageSize;
+    const paginatedResults = sortedResults.slice(startIndex, endIndex);
 
     return {
       totalOrders,
       totalPages,
       currentPage: page,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
-      orders: parsedResults,
+      orders: paginatedResults,
     };
   } catch (error) {
-    console.error("Lỗi trong groupOrders2:", error.message, error.stack);
+    console.error("Lỗi trong groupOrders:", error.message, error.stack);
     throw error;
   }
 }
