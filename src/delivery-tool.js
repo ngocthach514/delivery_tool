@@ -503,9 +503,50 @@ async function standardizeAddresses(orders) {
     let transportResults = [];
     const limit = pLimit(10);
 
+    const connection = await mysql.createConnection(dbConfig);
+    const [existingAddresses] = await connection.query(
+      `
+      SELECT id_order, address, district, ward, source
+      FROM orders_address
+      WHERE id_order IN (?)
+        AND address IS NOT NULL
+        AND district IS NOT NULL
+        AND ward IS NOT NULL
+      `,
+      [orders.map((order) => order.MaPX)]
+    );
+    await connection.end();
+
+    const addressMap = new Map(
+      existingAddresses.map((row) => [
+        row.id_order,
+        {
+          address: row.address,
+          district: row.district,
+          ward: row.ward,
+          source: row.source,
+        },
+      ])
+    );
+
     const openAIPromises = orders.map((order) =>
       limit(async () => {
         const { MaPX, DcGiaohang, isEmpty } = order;
+
+        const existingAddress = addressMap.get(MaPX);
+        if (existingAddress) {
+          console.log(
+            `Bỏ qua gọi OpenAI cho MaPX ${MaPX}: Đã có địa chỉ chuẩn hóa`
+          );
+          return {
+            MaPX,
+            DcGiaohang: existingAddress.address,
+            District: existingAddress.district,
+            Ward: existingAddress.ward,
+            Source: existingAddress.source,
+            isEmpty: false,
+          };
+        }
 
         if (!isValidAddress(DcGiaohang)) {
           console.log(`Bỏ qua địa chỉ không hợp lệ: ${DcGiaohang}`);
@@ -646,7 +687,6 @@ Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
 ]
 \`\`\`
         `;
-
         try {
           const completion = await openai.chat.completions.create({
             model: "gpt-4o-mini-2024-07-18",
@@ -690,6 +730,7 @@ Trả về đúng một chuỗi JSON duy nhất, định dạng như sau:
 
     const openAIPromisesResults = await Promise.all(openAIPromises);
 
+    // Tiếp tục xử lý như code gốc
     const validOrderIds = await getValidOrderIds();
     const validOpenAIResults = openAIPromisesResults.filter((order) =>
       validOrderIds.has(order.MaPX)
@@ -1979,7 +2020,6 @@ async function main(page = 1, io) {
       console.log("🏁 Công cụ giao hàng hoàn tất.");
       console.log(`⏱️ main thực thi trong ${Date.now() - startTime}ms`);
 
-      // Gửi sự kiện ordersUpdated với nextRunTime
       if (io) {
         io.emit("ordersUpdated", {
           message: "Danh sách đơn hàng đã được cập nhật",
@@ -1992,7 +2032,11 @@ async function main(page = 1, io) {
     }
 
     console.log("🗺️ Bước 5: Chuẩn hóa và ánh xạ địa chỉ...");
-    const standardizedOrders = await standardizeAddresses(orders);
+    const ordersToStandardize = orders.filter(
+      (order) => order.addressChanged || order.isEmpty
+    );
+    console.log(`Số đơn hàng cần chuẩn hóa: ${ordersToStandardize.length}`);
+    const standardizedOrders = await standardizeAddresses(ordersToStandardize);
     console.log(
       `✅ Đã chuẩn hóa và ánh xạ đơn hàng: ${standardizedOrders.length}`
     );
@@ -2020,7 +2064,6 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    // Gửi sự kiện ordersUpdated với nextRunTime
     if (io) {
       io.emit("ordersUpdated", {
         message: "Danh sách đơn hàng đã được cập nhật",
