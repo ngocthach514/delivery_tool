@@ -266,9 +266,9 @@ function parseDeliveryNoteForAddress(note) {
     return {
       transportName: "",
       address: "",
-      timeHint: "",
+      timeHint: null,
       priority: 0,
-      deliveryDate: "",
+      deliveryDate: null,
       cargoType: "",
     };
 
@@ -319,7 +319,7 @@ function parseDeliveryNoteForAddress(note) {
   );
   const timeHint = timeHintMatch
     ? timeHintMatch[1]
-    : normalizedNote.match(/\b(sáng|chiều|tối)\b/i)?.[0] || "";
+    : normalizedNote.match(/\b(sáng|chiều|tối)\b/i)?.[0] || null;
 
   const priorityMatch = normalizedNote.match(
     /\b(gấp|nhanh|sớm|khẩn cấp|hỏa tốc|mau lên)\b/i
@@ -329,7 +329,7 @@ function parseDeliveryNoteForAddress(note) {
   const deliveryDateMatch = normalizedNote.match(
     /\b(hôm nay|ngày mai|ngày mốt|thứ hai|thứ ba|thứ tư|thứ năm|thứ sáu|thứ bảy|chủ nhật)\b/i
   );
-  const deliveryDate = deliveryDateMatch ? deliveryDateMatch[0] : "";
+  const deliveryDate = deliveryDateMatch ? deliveryDateMatch[0] : null;
 
   const cargoTypeMatch = normalizedNote.match(
     /\b(hàng dễ vỡ|hàng nặng|hàng gấp|hàng lạnh|hàng tươi)\b/i
@@ -631,7 +631,9 @@ async function checkRouteCache(cleanedAddress, originalAddress) {
     const [rows] = await connection.query(
       `SELECT standardized_address, district, ward, distance, travel_time
        FROM route_cache
-       WHERE normalized_address = ?`,
+       WHERE normalized_address = ?
+         AND distance IS NOT NULL
+         AND travel_time IS NOT NULL`,
       [normalizedAddress]
     );
     await connection.end();
@@ -640,7 +642,7 @@ async function checkRouteCache(cleanedAddress, originalAddress) {
       return rows[0];
     }
     console.log(
-      `[checkRouteCache] Không tìm thấy cache cho địa chỉ: ${cleanedAddress}`
+      `[checkRouteCache] Không tìm thấy cache hợp lệ cho địa chỉ: ${cleanedAddress}`
     );
     return null;
   } catch (error) {
@@ -1265,8 +1267,6 @@ async function standardizeAddresses(orders) {
     }
 
     const connection = await createConnectionWithRetry();
-    console.log("[standardizeAddresses] Kết nối cơ sở dữ liệu thành công");
-
     const [existingAddresses] = await connection.query(
       `SELECT id_order, address, district, ward, source FROM orders_address
        WHERE id_order IN (${orderIds.map(() => "?").join(",")})`,
@@ -1281,13 +1281,6 @@ async function standardizeAddresses(orders) {
     );
     await connection.end();
 
-    console.log(
-      `[standardizeAddresses] Lấy được ${existingAddresses.length} địa chỉ hiện có`
-    );
-    console.log(
-      `[standardizeAddresses] Lấy được ${orderDetails.length} chi tiết đơn hàng`
-    );
-
     const addressMap = new Map(
       existingAddresses.map((row) => [row.id_order, row])
     );
@@ -1295,7 +1288,6 @@ async function standardizeAddresses(orders) {
       orderDetails.map((row) => [row.id_order, row])
     );
     const results = [];
-    let transportResults = [];
 
     const batchSize = 50;
     for (let i = 0; i < orders.length; i += batchSize) {
@@ -1315,14 +1307,6 @@ async function standardizeAddresses(orders) {
             const existingAddress = addressMap.get(MaPX);
             const orderDetail = orderDetailMap.get(MaPX);
 
-            console.log(
-              `[standardizeAddresses] Bắt đầu xử lý MaPX ${MaPX}: DcGiaohang=${JSON.stringify(
-                DcGiaohang
-              )}, DiachiTruSo=${JSON.stringify(
-                orderDetail?.DiachiTruSo
-              )}, existingAddress=${JSON.stringify(existingAddress)}`
-            );
-
             if (
               existingAddress &&
               existingAddress.address &&
@@ -1336,15 +1320,11 @@ async function standardizeAddresses(orders) {
               return { ...existingAddress, MaPX, isEmpty: false };
             }
 
-            // Sử dụng DiachiTruSo nếu DcGiaohang rỗng
             const addressToProcess = !DcGiaohang
               ? orderDetail?.DiachiTruSo || ""
               : DcGiaohang;
 
             if (!addressToProcess) {
-              console.log(
-                `[standardizeAddresses] Cả DcGiaohang và DiachiTruSo đều rỗng cho MaPX ${MaPX}`
-              );
               const SOKM =
                 orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
                   ? parseFloat(orderDetail.SOKM)
@@ -1365,18 +1345,10 @@ async function standardizeAddresses(orders) {
                 deliveryDate: order.deliveryDate || "",
                 cargoType: order.cargoType || "",
               };
-              console.log(
-                `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (rỗng): ${JSON.stringify(
-                  result
-                )}, thời gian: ${Date.now() - orderStartTime}ms`
-              );
               return result;
             }
 
             if (!isValidAddress(addressToProcess)) {
-              console.log(
-                `[standardizeAddresses] Địa chỉ không hợp lệ cho MaPX ${MaPX}: ${addressToProcess}`
-              );
               const SOKM =
                 orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
                   ? parseFloat(orderDetail.SOKM)
@@ -1397,11 +1369,6 @@ async function standardizeAddresses(orders) {
                 deliveryDate: order.deliveryDate || "",
                 cargoType: order.cargoType || "",
               };
-              console.log(
-                `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (không hợp lệ): ${JSON.stringify(
-                  result
-                )}, thời gian: ${Date.now() - orderStartTime}ms`
-              );
               return result;
             }
 
@@ -1410,9 +1377,6 @@ async function standardizeAddresses(orders) {
               addressToProcess.toLowerCase().includes(keyword)
             );
             if (isExpressDelivery) {
-              console.log(
-                `[standardizeAddresses] Địa chỉ chứa "chuyển phát nhanh" cho MaPX ${MaPX}: ${addressToProcess}`
-              );
               const result = {
                 MaPX,
                 DcGiaohang: addressToProcess,
@@ -1426,45 +1390,21 @@ async function standardizeAddresses(orders) {
                 deliveryDate: order.deliveryDate || "",
                 cargoType: order.cargoType || "",
               };
-              console.log(
-                `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (chuyển phát nhanh): ${JSON.stringify(
-                  result
-                )}, thời gian: ${Date.now() - orderStartTime}ms`
-              );
               return result;
             }
 
             const noteInfo = parseDeliveryNoteForAddress(
               orderDetail?.delivery_note
             );
-            console.log(
-              `[standardizeAddresses] Ghi chú giao hàng cho MaPX ${MaPX}: ${JSON.stringify(
-                noteInfo
-              )}`
-            );
-
             const isTransport = isTransportAddress(addressToProcess);
             const { cleanedAddress, transportName, specificAddress } =
               preprocessAddress(addressToProcess);
-            console.log(
-              `[standardizeAddresses] Kết quả preprocessAddress cho MaPX ${MaPX}: cleanedAddress=${JSON.stringify(
-                cleanedAddress
-              )}, transportName=${transportName}, specificAddress=${JSON.stringify(
-                specificAddress
-              )}`
-            );
 
-            // Kiểm tra cache
             const cacheResult = await checkRouteCache(
               cleanedAddress,
               addressToProcess
             );
             if (cacheResult) {
-              console.log(
-                `[standardizeAddresses] Sử dụng cache cho MaPX ${MaPX}: ${JSON.stringify(
-                  cacheResult
-                )}`
-              );
               const result = {
                 MaPX,
                 DcGiaohang: cacheResult.standardized_address,
@@ -1478,11 +1418,6 @@ async function standardizeAddresses(orders) {
                 deliveryDate: noteInfo.deliveryDate || "",
                 cargoType: noteInfo.cargoType || "",
               };
-              console.log(
-                `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (cache): ${JSON.stringify(
-                  result
-                )}, thời gian: ${Date.now() - orderStartTime}ms`
-              );
               return result;
             }
 
@@ -1496,11 +1431,6 @@ async function standardizeAddresses(orders) {
                 noteInfo.timeHint || ""
               );
               if (transportResult.DcGiaohang) {
-                console.log(
-                  `[standardizeAddresses] Nhà xe tìm thấy cho MaPX ${MaPX}: ${JSON.stringify(
-                    transportResult
-                  )}`
-                );
                 const result = {
                   MaPX,
                   DcGiaohang: transportResult.DcGiaohang,
@@ -1514,26 +1444,12 @@ async function standardizeAddresses(orders) {
                   deliveryDate: noteInfo.deliveryDate || "",
                   cargoType: noteInfo.cargoType || "",
                 };
-                console.log(
-                  `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (transport): ${JSON.stringify(
-                    result
-                  )}, thời gian: ${Date.now() - orderStartTime}ms`
-                );
                 return result;
               }
-              console.log(
-                `[standardizeAddresses] Không tìm thấy nhà xe cho MaPX ${MaPX}`
-              );
             }
 
-            // Sử dụng specificAddress nếu có, nếu không dùng cleanedAddress
             const addressToStandardize =
               specificAddress || cleanedAddress || addressToProcess;
-            console.log(
-              `[standardizeAddresses] Địa chỉ gửi đến OpenAI cho MaPX ${MaPX}: ${JSON.stringify(
-                addressToStandardize
-              )}`
-            );
             let openAIResult = await callOpenAI(MaPX, addressToStandardize);
             openAICalls++;
 
@@ -1543,23 +1459,6 @@ async function standardizeAddresses(orders) {
               openAIResult.District &&
               openAIResult.Ward
             ) {
-              console.log(
-                `[standardizeAddresses] OpenAI trả về cho MaPX ${MaPX}: ${JSON.stringify(
-                  openAIResult
-                )}`
-              );
-              // Lưu vào cache
-              await saveRouteToCache(
-                addressToProcess,
-                openAIResult.DcGiaohang,
-                openAIResult.District,
-                openAIResult.Ward,
-                null,
-                null
-              );
-              console.log(
-                `[standardizeAddresses] Lưu cache cho MaPX ${MaPX}: ${openAIResult.DcGiaohang}`
-              );
               const result = {
                 MaPX,
                 DcGiaohang: openAIResult.DcGiaohang,
@@ -1573,18 +1472,9 @@ async function standardizeAddresses(orders) {
                 deliveryDate: noteInfo.deliveryDate || "",
                 cargoType: noteInfo.cargoType || "",
               };
-              console.log(
-                `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (OpenAI): ${JSON.stringify(
-                  result
-                )}, thời gian: ${Date.now() - orderStartTime}ms`
-              );
               return result;
             }
 
-            // OpenAI không chuẩn hóa được, thử DiachiTruSo
-            console.log(
-              `[standardizeAddresses] OpenAI không chuẩn hóa được cho MaPX ${MaPX}, kiểm tra DiachiTruSo`
-            );
             if (
               orderDetail?.DiachiTruSo &&
               orderDetail.DiachiTruSo !== addressToProcess
@@ -1592,22 +1482,11 @@ async function standardizeAddresses(orders) {
               const fallbackAddress = preprocessAddress(
                 orderDetail.DiachiTruSo
               );
-              console.log(
-                `[standardizeAddresses] Kết quả preprocessAddress cho DiachiTruSo của MaPX ${MaPX}: ${JSON.stringify(
-                  fallbackAddress
-                )}`
-              );
-
               const fallbackCache = await checkRouteCache(
                 fallbackAddress.cleanedAddress,
                 orderDetail.DiachiTruSo
               );
               if (fallbackCache) {
-                console.log(
-                  `[standardizeAddresses] Sử dụng cache cho DiachiTruSo của MaPX ${MaPX}: ${JSON.stringify(
-                    fallbackCache
-                  )}`
-                );
                 const result = {
                   MaPX,
                   DcGiaohang: fallbackCache.standardized_address,
@@ -1621,19 +1500,9 @@ async function standardizeAddresses(orders) {
                   deliveryDate: noteInfo.deliveryDate || "",
                   cargoType: noteInfo.cargoType || "",
                 };
-                console.log(
-                  `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (cache DiachiTruSo): ${JSON.stringify(
-                    result
-                  )}, thời gian: ${Date.now() - orderStartTime}ms`
-                );
                 return result;
               }
 
-              console.log(
-                `[standardizeAddresses] Gọi OpenAI cho DiachiTruSo của MaPX ${MaPX}: ${JSON.stringify(
-                  fallbackAddress.cleanedAddress
-                )}`
-              );
               openAIResult = await callOpenAI(
                 MaPX,
                 fallbackAddress.cleanedAddress
@@ -1646,17 +1515,6 @@ async function standardizeAddresses(orders) {
                 openAIResult.District &&
                 openAIResult.Ward
               ) {
-                await saveRouteToCache(
-                  orderDetail.DiachiTruSo,
-                  openAIResult.DcGiaohang,
-                  openAIResult.District,
-                  openAIResult.Ward,
-                  null,
-                  null
-                );
-                console.log(
-                  `[standardizeAddresses] Lưu cache cho DiachiTruSo của MaPX ${MaPX}: ${openAIResult.DcGiaohang}`
-                );
                 const result = {
                   MaPX,
                   DcGiaohang: openAIResult.DcGiaohang,
@@ -1670,19 +1528,10 @@ async function standardizeAddresses(orders) {
                   deliveryDate: noteInfo.deliveryDate || "",
                   cargoType: noteInfo.cargoType || "",
                 };
-                console.log(
-                  `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (OpenAI DiachiTruSo): ${JSON.stringify(
-                    result
-                  )}, thời gian: ${Date.now() - orderStartTime}ms`
-                );
                 return result;
               }
             }
 
-            // Nếu cả OpenAI và DiachiTruSo thất bại, sử dụng địa chỉ gốc
-            console.log(
-              `[standardizeAddresses] Không chuẩn hóa được, dùng địa chỉ gốc: ${addressToProcess}`
-            );
             const SOKM =
               orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
                 ? parseFloat(orderDetail.SOKM)
@@ -1703,11 +1552,6 @@ async function standardizeAddresses(orders) {
               deliveryDate: order.deliveryDate || "",
               cargoType: order.cargoType || "",
             };
-            console.log(
-              `[standardizeAddresses] Kết quả cho MaPX ${MaPX} (gốc): ${JSON.stringify(
-                result
-              )}, thời gian: ${Date.now() - orderStartTime}ms`
-            );
             return result;
           })
         )
@@ -1716,31 +1560,8 @@ async function standardizeAddresses(orders) {
     }
 
     const validOrderIds = await getValidOrderIds();
-    console.log(
-      `[standardizeAddresses] Lấy được ${validOrderIds.size} MaPX hợp lệ`
-    );
-
     const validResults = results.filter((order) =>
       validOrderIds.has(order.MaPX)
-    );
-
-    console.log(
-      `[standardizeAddresses] Kết quả chuẩn hóa (${
-        validResults.length
-      } đơn): ${JSON.stringify(
-        validResults.map((order) => ({
-          MaPX: order.MaPX,
-          DcGiaohang: order.DcGiaohang,
-          District: order.District,
-          Ward: order.Ward,
-          Source: order.Source,
-          distance: order.distance,
-          travel_time: order.travel_time,
-          priority: order.priority,
-          deliveryDate: order.deliveryDate,
-          cargoType: order.cargoType,
-        }))
-      )}`
     );
 
     if (validResults.length > 0) {
@@ -1772,95 +1593,8 @@ async function standardizeAddresses(orders) {
         console.log(
           `[standardizeAddresses] Lưu ${insertResult.affectedRows} dòng vào orders_address`
         );
-
-        const [nullDistrictWardOrders] = await connection.query(
-          `
-          SELECT id_order, address, source
-          FROM orders_address
-          WHERE district IS NULL AND ward IS NULL AND address IS NOT NULL
-          `
-        );
-        console.log(
-          `[standardizeAddresses] Tìm thấy ${nullDistrictWardOrders.length} bản ghi orders_address có district và ward null`
-        );
-
-        const transportPromises = nullDistrictWardOrders.map((order) =>
-          limit(async () => {
-            const { id_order, address } = order;
-            console.log(
-              `[standardizeAddresses] Tìm nhà xe cho id_order ${id_order}: ${address}`
-            );
-            const transportResult = await findTransportCompany(
-              address,
-              orderDetailMap.get(id_order)?.date_delivery,
-              orderDetailMap.get(id_order)?.travel_time || 15,
-              id_order,
-              "",
-              ""
-            );
-            if (transportResult.DcGiaohang) {
-              console.log(
-                `[standardizeAddresses] Nhà xe tìm thấy cho id_order ${id_order}: ${JSON.stringify(
-                  transportResult
-                )}`
-              );
-              return {
-                MaPX: id_order,
-                DcGiaohang: transportResult.DcGiaohang,
-                District: transportResult.District,
-                Ward: transportResult.Ward,
-                Source: "TransportDB",
-                isEmpty: false,
-                distance: null,
-                travel_time: null,
-                priority: noteInfo.priority || 0,
-                deliveryDate: noteInfo.deliveryDate || "",
-                cargoType: noteInfo.cargoType || "",
-              };
-            }
-            console.log(
-              `[standardizeAddresses] Không tìm thấy nhà xe cho id_order ${id_order}`
-            );
-            return null;
-          })
-        );
-
-        transportResults = (await Promise.all(transportPromises)).filter(
-          (result) => result !== null
-        );
-
-        if (transportResults.length > 0) {
-          const transportValues = transportResults.map((order) => [
-            order.MaPX,
-            order.DcGiaohang,
-            order.District,
-            order.Ward,
-            order.Source,
-            order.distance,
-            order.travel_time,
-          ]);
-          const [transportInsertResult] = await connection.query(
-            `INSERT INTO orders_address (id_order, address, district, ward, source, distance, travel_time)
-             VALUES ?
-             ON DUPLICATE KEY UPDATE
-               address = IF(VALUES(address) != '', VALUES(address), address),
-               district = IF(VALUES(district) IS NOT NULL, VALUES(district), district),
-               ward = IF(VALUES(ward) IS NOT NULL, VALUES(ward), ward),
-               source = IF(VALUES(source) IS NOT NULL, VALUES(source), source),
-               distance = VALUES(distance),
-               travel_time = VALUES(travel_time)`,
-            [transportValues]
-          );
-          console.log(
-            `[standardizeAddresses] Lưu ${transportInsertResult.affectedRows} dòng từ nhà xe vào orders_address`
-          );
-
-          validResults.push(...transportResults);
-        }
       }
       await connection.end();
-    } else {
-      console.log("[standardizeAddresses] Không có kết quả hợp lệ để lưu");
     }
 
     console.log(
@@ -3303,7 +3037,7 @@ async function analyzeDeliveryNote() {
                     .replace(/giua thang sau|giữa tháng sau|giua thang toi|giữa tháng tới/g, "giữa tháng sau")
                     .replace(/cuoi thang sau|cuối tháng sau|cuoi thang toi|cuối tháng tới/g, "cuối tháng sau")
                     .replace(/mai|ngay mai|bữa sau|bua sau|hom sau|hôm sau|ngày mai/g, "ngày mai")
-                    .replace(/mot|ngay mot|mốt|2 ngày nữa|hai ngay nua|2 bữa nữa|hai bua nua|2 hôm nữa|hai hôm nữa/g, "ngày mốt")
+                    .replace(/mot|ngay mot|mốt|2 ngày nữa|hai ngay nua|2 bữa nữa|hai bua nua|2 hôm nữa|hai hom nua/g, "ngày mốt")
                     .replace(/ngay kia|ngày kia|3 ngay nua|3 hôm nữa|ba ngay nua|ba hom nua/g, "ngày kia")
                     .replace(/(\d+)\s*ngay nua|\d+\s*hom nua|\d+\s*buoi nua/g, (match, days) => `${days} ngày nữa`)
                     .replace(/giao nhanh trong ngay|giao nhanh hom nay/g, "gấp hôm nay")
@@ -3319,28 +3053,43 @@ async function analyzeDeliveryNote() {
                     .replace(/thu hai tuần này|thứ hai tuần này|thu 2 tuần này|thứ 2 tuần này|thu hai tuan ni|thứ hai tuan ni/g, "thứ hai tuần này")
                     .replace(/thu ba tuần này|thứ ba tuần này|thu 3 tuần này|thứ 3 tuần này|thu ba tuan ni|thứ ba tuan ni/g, "thứ ba tuần này")
                     .replace(/thu tu tuần này|thứ tư tuần này|thu 4 tuần này|thứ 4 tuần này|thu tu tuan ni|thứ tư tuan ni/g, "thứ tư tuần này")
-                    .replace(/thu nam tuần này|thứ năm tuần này|thu 5 tuần này|thứ 5 tuần này|thu nam tuan ni|thứ năm tuan ni/g, "thứ năm tuần này")
-                    .replace(/thu sau tuần này|thứ sáu tuần này|thu 6 tuần này|thứ 6 tuần này|thu sau tuan ni|thứ sáu tuan ni/g, "thứ sáu tuần này")
-                    .replace(/thu bay tuần này|thứ bảy tuần này|thu 7 tuần này|thứ 7 tuần này|thu bay tuan ni|thứ bảy tuan ni/g, "thứ bảy tuần này")
-                    .replace(/chu nhat tuần này|chủ nhật tuần này|cn tuần này|chu nhat tuan ni|chủ nhật tuan ni/g, "chủ nhật tuần này")
+                    .replace(/thu nam tuần này|thứ năm tuần này|thu 5 tuần này|thứ 5 tuần này|thu nam tuan ni|thứ nam tuan ni/g, "thứ năm tuần này")
+                    .replace(/thu sau tuần này|thứ sáu tuần này|thu 6 tuần này|thứ 6 tuần này|thu sau tuan ni|thứ sau tuan ni/g, "thứ sáu tuần này")
+                    .replace(/thu bay tuần này|thứ bảy tuần này|thu 7 tuần này|thứ 7 tuần này|thu bay tuan ni|thứ bay tuan ni/g, "thứ bảy tuần này")
+                    .replace(/chu nhat tuần này|chủ nhật tuần này|cn tuần này|chu nhat tuan ni|chủ nhat tuan ni/g, "chủ nhật tuần này")
                     .replace(/thu hai tuần sau|thứ hai tuần sau|thu 2 tuần sau|thứ 2 tuần sau|thu hai tuan toi|thứ hai tuan toi/g, "thứ hai tuần sau")
                     .replace(/thu ba tuần sau|thứ ba tuần sau|thu 3 tuần sau|thứ 3 tuần sau|thu ba tuan toi|thứ ba tuan toi/g, "thứ ba tuần sau")
                     .replace(/thu tu tuần sau|thứ tư tuần sau|thu 4 tuần sau|thứ 4 tuần sau|thu tu tuan toi|thứ tư tuan toi/g, "thứ tư tuần sau")
-                    .replace(/thu nam tuần sau|thứ năm tuần sau|thu 5 tuần sau|thứ 5 tuần sau|thu nam tuan toi|thứ năm tuan toi/g, "thứ năm tuần sau")
-                    .replace(/thu sau tuần sau|thứ sáu tuần sau|thu 6 tuần sau|thứ 6 tuần sau|thu sau tuan toi|thứ sáu tuan toi/g, "thứ sáu tuần sau")
-                    .replace(/thu bay tuần sau|thứ bảy tuần sau|thu 7 tuần sau|thứ 7 tuần sau|thu bay tuan toi|thứ bảy tuan toi/g, "thứ bảy tuần sau")
-                    .replace(/chu nhat tuần sau|chủ nhật tuần sau|cn tuần sau|chu nhat tuan toi|chủ nhật tuan toi/g, "chủ nhật tuần sau")
+                    .replace(/thu nam tuần sau|thứ năm tuần sau|thu 5 tuần sau|thứ 5 tuần sau|thu nam tuan toi|thứ nam tuan toi/g, "thứ năm tuần sau")
+                    .replace(/thu sau tuần sau|thứ sáu tuần sau|thu 6 tuần sau|thứ 6 tuần sau|thu sau tuan toi|thứ sau tuan toi/g, "thứ sáu tuần sau")
+                    .replace(/thu bay tuần sau|thứ bảy tuần sau|thu 7 tuần sau|thứ 7 tuần sau|thu bay tuan toi|thứ bay tuan toi/g, "thứ bảy tuần sau")
+                    .replace(/chu nhat tuần sau|chủ nhật tuần sau|cn tuần sau|chu nhat tuan toi|chủ nhat tuan toi/g, "chủ nhật tuần sau")
                     .replace(/khoang|khoảng|tu|tu\s*den|từ\s*đến/g, "đến")
                     .replace(/\s+/g, " ")
                     .trim();
 
                 // Phân tích ghi chú
                 const noteInfo = parseDeliveryNoteForAddress(normalizedNote);
-                const { timeHint, priority: notePriority, deliveryDate } = noteInfo;
-                priority = notePriority;
+                let { timeHint, priority: notePriority, deliveryDate } = noteInfo;
+
+                // Kiểm tra và sửa giá trị không hợp lệ từ parseDeliveryNoteForAddress
+                if (timeHint === '0' || timeHint === 0 || timeHint === '' || timeHint === undefined || timeHint === null) {
+                    console.warn(`Đơn ${order.id_order}: timeHint không hợp lệ (${timeHint}), gán null`);
+                    timeHint = null;
+                }
+                if (deliveryDate === '0' || deliveryDate === 0 || deliveryDate === '' || deliveryDate === undefined || deliveryDate === null) {
+                    console.warn(`Đơn ${order.id_order}: deliveryDate không hợp lệ (${deliveryDate}), gán null`);
+                    deliveryDate = null;
+                }
+                if (notePriority === undefined || notePriority === null || isNaN(notePriority)) {
+                    console.warn(`Đơn ${order.id_order}: notePriority không hợp lệ (${notePriority}), gán 0`);
+                    notePriority = 0;
+                }
 
                 // Log để kiểm tra đầu ra của parseDeliveryNoteForAddress
                 console.log(`Đơn ${order.id_order}: normalizedNote="${normalizedNote}", timeHint="${timeHint}", deliveryDate="${deliveryDate}", notePriority=${notePriority}`);
+
+                priority = notePriority;
 
                 // Xác định ngày giao hàng từ ghi chú
                 const specificDateMatch = normalizedNote.match(/(?:giao ngày|giao vào ngày|giao lúc|giao)\s*(\d{2}[./]\d{2}(?:[./]\d{4})?)/i);
@@ -3351,8 +3100,13 @@ async function analyzeDeliveryNote() {
                         dateStr += `/2025`;
                     }
                     deliveryDateMoment = moment(dateStr, "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh");
-                    hasKeyword = true;
-                } else if (deliveryDate) {
+                    if (deliveryDateMoment.isValid()) {
+                        hasKeyword = true;
+                    } else {
+                        console.warn(`Đơn ${order.id_order}: Ngày cụ thể không hợp lệ (${dateStr}), bỏ qua`);
+                        hasKeyword = false;
+                    }
+                } else if (deliveryDate && typeof deliveryDate === 'string') {
                     hasKeyword = true;
                     const now = moment().tz("Asia/Ho_Chi_Minh");
                     switch (deliveryDate.toLowerCase()) {
@@ -3495,7 +3249,8 @@ async function analyzeDeliveryNote() {
                                 const days = parseInt(daysMatch[1], 10);
                                 deliveryDateMoment = now.clone().add(days, "days");
                             } else {
-                                hasKeyword = false; // Nếu deliveryDate không khớp, đặt lại hasKeyword
+                                hasKeyword = false;
+                                console.warn(`Đơn ${order.id_order}: deliveryDate không khớp với từ khóa thời gian (${deliveryDate})`);
                             }
                             break;
                     }
@@ -3576,6 +3331,9 @@ async function analyzeDeliveryNote() {
                                         .startOf("day")
                                         .add(hour, "hours")
                                         .add(minute, "minutes");
+                                } else {
+                                    console.warn(`Đơn ${order.id_order}: timeHint không hợp lệ (${timeHint}), bỏ qua`);
+                                    hasKeyword = false;
                                 }
                                 break;
                         }
@@ -3712,6 +3470,11 @@ async function analyzeDeliveryNote() {
 
             analyzedOrders.forEach(([id_order]) => {
                 const update = priorityUpdates.find(([_, __, id]) => id === id_order) || [0, null, id_order];
+                // Kiểm tra lại update[1] (delivery_deadline) trước khi thêm vào query
+                if (update[1] === '0' || (update[1] && !moment(update[1], "YYYY-MM-DD HH:mm:ss", true).isValid())) {
+                    console.warn(`Đơn ${id_order}: delivery_deadline không hợp lệ trong priorityUpdates (${update[1]}), gán null`);
+                    update[1] = null;
+                }
                 updateQuery += ` WHEN ? THEN ?`;
                 deliveryDeadlineCase += ` WHEN ? THEN ?`;
                 queryParams.push(id_order, update[0], id_order, update[1]);
