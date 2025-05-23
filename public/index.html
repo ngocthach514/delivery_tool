@@ -839,11 +839,7 @@
             },
             { text: priorityText, class: priorityClass },
             {
-              text: o.date_delivery
-                ? moment(o.date_delivery)
-                    .tz("Asia/Ho_Chi_Minh")
-                    .format("DD/MM/YYYY HH:mm:ss")
-                : "N/A",
+              text: o.date_delivery,
               class: priorityClass,
             },
             {
