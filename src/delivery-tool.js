@@ -82,6 +82,359 @@ async function createConnectionWithRetry() {
 }
 
 // ========================================================== ADDRESS & TRANSPORT =========================================================
+/**
+ * Phân tích địa chỉ từ orders.address và quyết định hàm xử lý phù hợp
+ * @param {string} id_order
+ * @param {string} address
+ * @param {string} delivery_note
+ * @param {string} DiachiTruSo
+ * @param {string} date_delivery
+ * @param {number} SOKM
+ * @returns {Promise<Object>}
+ */
+async function analyzeAddress(
+  id_order,
+  address,
+  delivery_note,
+  DiachiTruSo,
+  date_delivery,
+  SOKM
+) {
+  if (!id_order) {
+    console.error(
+      "[analyzeAddress] Lỗi: orders.id_order không được định nghĩa"
+    );
+    throw new Error("orders.id_order không được định nghĩa");
+  }
+
+  // Kiểm tra địa chỉ rỗng hoặc không hợp lệ (orders.address)
+  if (!isValidAddress(address)) {
+    return await handleEmptyAddress(
+      id_order,
+      delivery_note,
+      DiachiTruSo,
+      date_delivery,
+      SOKM
+    );
+  }
+
+  // Kiểm tra xem địa chỉ có chứa từ khóa nhà xe
+  const isTransport = isTransportAddress(address);
+  const { transportName } = extractTransportInfo(address);
+  const transportKeywordCount = transportName ? 1 : 0; // Đếm số lần xuất hiện từ khóa nhà xe
+
+  // Trường hợp địa chỉ thông thường (không có từ khóa nhà xe và có dạng số nhà + đường)
+  if (!isTransport && address.match(/\d+\s+[^\d\s]+/i)) {
+    return await handleRegularAddress(id_order, address);
+  }
+
+  // Trường hợp chỉ có một nhà xe
+  if (isTransport && transportKeywordCount === 1) {
+    return await handleSingleTransportAddress(
+      id_order,
+      address,
+      delivery_note,
+      DiachiTruSo,
+      date_delivery,
+      SOKM
+    );
+  }
+
+  // Trường hợp có nhiều nhà xe (xử lý giống một nhà xe, ưu tiên delivery_note)
+  if (isTransport && transportKeywordCount >= 1) {
+    return await handleMultipleTransportAddress(
+      id_order,
+      address,
+      delivery_note,
+      DiachiTruSo,
+      date_delivery,
+      SOKM
+    );
+  }
+
+  // Mặc định: Xử lý như địa chỉ thông thường nếu không xác định được
+  return await handleRegularAddress(id_order, address);
+}
+
+/**
+ * Xử lý địa chỉ thông thường: Làm sạch và gửi qua OpenAI
+ * @param {string} id_order
+ * @param {string} address
+ * @returns {Promise<Object>}
+ */
+async function handleRegularAddress(id_order, address) {
+  if (!id_order) {
+    console.error(
+      "[handleRegularAddress] Lỗi: orders.id_order không được định nghĩa"
+    );
+    throw new Error("orders.id_order không được định nghĩa");
+  }
+
+  const cleanedAddress = cleanAddress(address);
+  if (!isValidAddress(cleanedAddress)) {
+    return {
+      id_order,
+      address: cleanedAddress,
+      district: null,
+      ward: null,
+      source: "Invalid",
+      distance: null,
+      travel_time: null,
+    };
+  }
+
+  const openAIResult = await callOpenAI(id_order, cleanedAddress);
+
+  if (openAIResult.DcGiaohang && openAIResult.District && openAIResult.Ward) {
+    return {
+      id_order,
+      address: openAIResult.DcGiaohang,
+      district: openAIResult.District,
+      ward: openAIResult.Ward,
+      source: "OpenAI",
+      distance: null,
+      travel_time: null,
+    };
+  }
+
+  return {
+    id_order,
+    address: cleanedAddress,
+    district: null,
+    ward: null,
+    source: "Original",
+    distance: null,
+    travel_time: null,
+  };
+}
+
+/**
+ * Xử lý địa chỉ có một nhà xe
+ * @param {string} id_order
+ * @param {string} address
+ * @param {string} delivery_note
+ * @param {string} DiachiTruSo
+ * @param {string} date_delivery
+ * @param {number} SOKM
+ * @returns {Promise<Object>}
+ */
+async function handleSingleTransportAddress(
+  id_order,
+  address,
+  delivery_note,
+  DiachiTruSo,
+  date_delivery,
+  SOKM
+) {
+  if (!id_order) {
+    console.error(
+      "[handleSingleTransportAddress] Lỗi: orders.id_order không được định nghĩa"
+    );
+    throw new Error("orders.id_order không được định nghĩa");
+  }
+
+  const { cleanedAddress, transportName, specificAddress } =
+    preprocessAddress(address);
+  const noteInfo = parseDeliveryNoteForAddress(delivery_note);
+  // Ưu tiên tên nhà xe từ delivery_note nếu có
+  const finalTransportName = noteInfo.transportName || transportName;
+  const normalizedTransportName = normalizeTransportName(finalTransportName);
+
+  // Tìm nhà xe trong transport_companies
+  if (normalizedTransportName) {
+    const transportResult = await findTransportCompany(
+      address,
+      date_delivery,
+      delivery_note, // Truyền delivery_note để ưu tiên khớp
+      id_order,
+      normalizedTransportName,
+      noteInfo.timeHint || ""
+    );
+    if (transportResult.DcGiaohang) {
+      return {
+        id_order,
+        address: transportResult.DcGiaohang, // Từ transport_companies.standardized_address
+        district: transportResult.District, // Từ transport_companies.district
+        ward: transportResult.Ward, // Từ transport_companies.ward
+        source: "TransportDB",
+        distance: null,
+        travel_time: null,
+      };
+    }
+  }
+
+  // Kiểm tra delivery_note để lấy địa chỉ giao hàng
+  if (noteInfo.address) {
+    const cleanedNoteAddress = cleanAddress(noteInfo.address);
+    if (isValidAddress(cleanedNoteAddress)) {
+      const openAIResult = await callOpenAI(id_order, cleanedNoteAddress);
+      if (
+        openAIResult.DcGiaohang &&
+        openAIResult.District &&
+        openAIResult.Ward
+      ) {
+        return {
+          id_order,
+          address: openAIResult.DcGiaohang,
+          district: openAIResult.District,
+          ward: openAIResult.Ward,
+          source: "OpenAI",
+          distance: null,
+          travel_time: null,
+        };
+      }
+    }
+  }
+
+  // Fallback về DiachiTruSo
+  if (DiachiTruSo) {
+    const cleanedTruSo = cleanAddress(DiachiTruSo);
+    if (isValidAddress(cleanedTruSo)) {
+      const openAIResult = await callOpenAI(id_order, cleanedTruSo);
+      const distance = SOKM && SOKM !== 0 ? SOKM : null;
+      const travelTime =
+        SOKM && SOKM !== 0
+          ? getTravelTimeByTimeFrame(SOKM, date_delivery)
+          : null;
+      return {
+        id_order,
+        address: openAIResult.DcGiaohang || cleanedTruSo,
+        district: openAIResult.District || null,
+        ward: openAIResult.Ward || null,
+        source: openAIResult.DcGiaohang ? "OpenAI" : "Original",
+        distance,
+        travel_time: travelTime,
+      };
+    }
+  }
+
+  return {
+    id_order,
+    address: "",
+    district: null,
+    ward: null,
+    source: "Empty",
+    distance: null,
+    travel_time: null,
+  };
+}
+
+/**
+ * Xử lý địa chỉ có nhiều nhà xe
+ * @param {string} id_order
+ * @param {string} address
+ * @param {string} delivery_note
+ * @param {string} DiachiTruSo
+ * @param {string} date_delivery
+ * @param {number} SOKM
+ * @returns {Promise<Object>}
+ */
+async function handleMultipleTransportAddress(
+  id_order,
+  address,
+  delivery_note,
+  DiachiTruSo,
+  date_delivery,
+  SOKM
+) {
+  if (!id_order) {
+    console.error(
+      "[handleMultipleTransportAddress] Lỗi: orders.id_order không được định nghĩa"
+    );
+    throw new Error("orders.id_order không được định nghĩa");
+  }
+
+  // Xử lý giống trường hợp một nhà xe, ưu tiên delivery_note
+  return await handleSingleTransportAddress(
+    id_order,
+    address,
+    delivery_note,
+    DiachiTruSo,
+    date_delivery,
+    SOKM
+  );
+}
+
+/**
+ * Xử lý địa chỉ rỗng
+ * @param {string} id_order
+ * @param {string} delivery_note
+ * @param {string} DiachiTruSo
+ * @param {string} date_delivery
+ * @param {number} SOKM
+ * @returns {Promise<Object>}
+ */
+async function handleEmptyAddress(
+  id_order,
+  delivery_note,
+  DiachiTruSo,
+  date_delivery,
+  SOKM
+) {
+  if (!id_order) {
+    console.error(
+      "[handleEmptyAddress] Lỗi: orders.id_order không được định nghĩa"
+    );
+    throw new Error("orders.id_order không được định nghĩa");
+  }
+
+  const noteInfo = parseDeliveryNoteForAddress(delivery_note);
+
+  // Kiểm tra delivery_note để lấy địa chỉ giao hàng
+  if (noteInfo.address) {
+    const cleanedNoteAddress = cleanAddress(noteInfo.address);
+    if (isValidAddress(cleanedNoteAddress)) {
+      const openAIResult = await callOpenAI(id_order, cleanedNoteAddress);
+      if (
+        openAIResult.DcGiaohang &&
+        openAIResult.District &&
+        openAIResult.Ward
+      ) {
+        return {
+          id_order,
+          address: openAIResult.DcGiaohang,
+          district: openAIResult.District,
+          ward: openAIResult.Ward,
+          source: "OpenAI",
+          distance: null,
+          travel_time: null,
+        };
+      }
+    }
+  }
+
+  // Fallback về DiachiTruSo
+  if (DiachiTruSo) {
+    const cleanedTruSo = cleanAddress(DiachiTruSo);
+    if (isValidAddress(cleanedTruSo)) {
+      const openAIResult = await callOpenAI(id_order, cleanedTruSo);
+      const distance = SOKM && SOKM !== 0 ? SOKM : null;
+      const travelTime =
+        SOKM && SOKM !== 0
+          ? getTravelTimeByTimeFrame(SOKM, date_delivery)
+          : null;
+      return {
+        id_order,
+        address: openAIResult.DcGiaohang || cleanedTruSo,
+        district: openAIResult.District || null,
+        ward: openAIResult.Ward || null,
+        source: openAIResult.DcGiaohang ? "OpenAI" : "Original",
+        distance,
+        travel_time: travelTime,
+      };
+    }
+  }
+
+  return {
+    id_order,
+    address: "",
+    district: null,
+    ward: null,
+    source: "Empty",
+    distance: null,
+    travel_time: null,
+  };
+}
 
 // PHÂN TÍCH THỜI GIAN KHỞI HÀNH
 function parseDepartureTime(departureTime) {
@@ -117,152 +470,117 @@ function parseDepartureTime(departureTime) {
   return { start, end };
 }
 
-// TÌM NHÀ XE
+/**
+ * Tìm nhà xe trong transport_companies
+ * @param {string} address
+ * @param {string} date_delivery
+ * @param {string} delivery_note
+ * @param {string} id_order
+ * @param {string} transportName
+ * @param {string} timeHint
+ * @returns {Promise<Object>}
+ */
 async function findTransportCompany(
   address,
-  dateDelivery,
-  travelTime,
-  orderId,
-  preferredTransportName = "",
-  timeHint = ""
+  date_delivery,
+  delivery_note,
+  id_order,
+  transportName,
+  timeHint
 ) {
-  const startTime = Date.now();
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const { cleanedAddress, transportName } = preprocessAddress(address);
-    const finalTransportName = preferredTransportName || transportName;
-
-    if (!finalTransportName) {
-      await connection.end();
-      console.log(
-        `[findTransportCompany] Không có nhà xe trong địa chỉ: ${address}`
-      );
-      return { remainingAddress: cleanedAddress };
-    }
-
-    const normalizedAddress = normalizeTransportName(finalTransportName);
-    const [rows] = await connection.execute(
-      `
-      SELECT standardized_address, district, ward, source, departure_time, status
-      FROM transport_companies
-      WHERE UPPER(name) LIKE ?
-      `,
-      [`%${normalizedAddress}%`]
+    const connection = await createConnectionWithRetry();
+    const [rows] = await connection.query(
+      `SELECT standardized_address, district, ward, departure_time, status
+       FROM transport_companies
+       WHERE UPPER(name) LIKE ?`,
+      [`%${transportName.toUpperCase()}%`]
     );
+    await connection.end();
 
     if (rows.length === 0) {
       console.log(
-        `[findTransportCompany] Không tìm thấy nhà xe: ${finalTransportName}`
+        `[findTransportCompany] Không tìm thấy nhà xe: ${transportName}`
       );
-      await connection.end();
-      return { remainingAddress: cleanedAddress };
+      return { DcGiaohang: null, District: null, Ward: null };
     }
 
     if (rows.length === 1) {
       console.log(
-        `[findTransportCompany] Tìm thấy nhà xe: ${finalTransportName}, địa chỉ: ${rows[0].standardized_address}`
+        `[findTransportCompany] Tìm thấy nhà xe: ${transportName}, địa chỉ: ${rows[0].standardized_address}`
       );
-      await connection.end();
       return {
         DcGiaohang: rows[0].standardized_address,
         District: rows[0].district,
         Ward: rows[0].ward,
-        Source: "TransportDB",
       };
     }
 
-    let selectedRow = null;
-    if (dateDelivery && travelTime !== null) {
-      let deliveryMoment;
-      const dateMatch = dateDelivery.match(/(\d{2})\/(\d{2})\/(\d{4})/);
-      if (dateMatch) {
-        deliveryMoment = moment({
-          year: parseInt(dateMatch[3]),
-          month: parseInt(dateMatch[2]) - 1,
-          day: parseInt(dateMatch[1]),
-          hour: 0,
-          minute: 0,
-          second: 0,
-        });
-      } else {
-        const [order] = await connection.execute(
-          `SELECT created_at FROM orders WHERE id_order = ?`,
-          [orderId]
-        );
-        deliveryMoment = moment(order[0]?.created_at || new Date());
-      }
-
-      if (!deliveryMoment.isValid()) {
-        console.warn(
-          `[findTransportCompany] date_delivery/created_at không hợp lệ cho ${orderId}`
-        );
-      } else {
-        const estimatedTime = deliveryMoment.add(15 + travelTime, "minutes");
-        let timeMatched = false;
-
-        if (timeHint) {
-          for (const row of rows) {
-            const { start, end } = parseDepartureTime(row.departure_time);
-            if (start && end) {
-              const startHour = start.hour();
-              const endHour = end.hour();
-              if (
-                (timeHint === "sáng" && startHour >= 0 && endHour <= 12) ||
-                (timeHint === "chiều" && startHour >= 12 && endHour <= 18) ||
-                (timeHint === "tối" && startHour >= 18)
-              ) {
-                if (estimatedTime.isBetween(start, end, null, "[]")) {
-                  selectedRow = row;
-                  timeMatched = true;
-                  break;
-                }
-              }
-            }
-          }
-        }
-
-        if (!timeMatched) {
-          for (const row of rows) {
-            const { start, end } = parseDepartureTime(row.departure_time);
-            if (
-              start &&
-              end &&
-              estimatedTime.isBetween(start, end, null, "[]")
-            ) {
-              selectedRow = row;
-              break;
-            }
-          }
-        }
-      }
-    }
-
-    if (!selectedRow) {
-      selectedRow = rows[0];
-      console.warn(
-        `[findTransportCompany] Nhiều nhà xe trùng tên: ${finalTransportName}, chọn mặc định: ${selectedRow.standardized_address}`
-      );
-    }
-
+    // Xử lý nhiều nhà xe trùng tên
     console.log(
-      `[findTransportCompany] Tìm thấy nhà xe: ${finalTransportName}, địa chỉ: ${selectedRow.standardized_address}`
+      `[findTransportCompany] Nhiều nhà xe trùng tên: ${transportName}`
     );
-    await connection.end();
+
+    // Ưu tiên khớp với delivery_note
+    if (delivery_note && typeof delivery_note === "string") {
+      const noteUpper = delivery_note.toUpperCase();
+      for (const row of rows) {
+        if (row.name && noteUpper.includes(row.name.toUpperCase())) {
+          console.log(
+            `[findTransportCompany] Chọn nhà xe từ delivery_note: ${row.name}, địa chỉ: ${row.standardized_address}`
+          );
+          return {
+            DcGiaohang: row.standardized_address,
+            District: row.district,
+            Ward: row.ward,
+          };
+        }
+      }
+    }
+
+    // Nếu không khớp delivery_note, thử khớp departure_time
+    if (timeHint && typeof timeHint === "string") {
+      for (const row of rows) {
+        if (
+          row.departure_time &&
+          timeHint.toUpperCase().includes(row.departure_time.toUpperCase())
+        ) {
+          console.log(
+            `[findTransportCompany] Chọn nhà xe từ departure_time: ${row.name}, địa chỉ: ${row.standardized_address}`
+          );
+          return {
+            DcGiaohang: row.standardized_address,
+            District: row.district,
+            Ward: row.ward,
+          };
+        }
+      }
+    }
+
+    // Mặc định chọn nhà xe đầu tiên
+    console.log(
+      `[findTransportCompany] Chọn mặc định: ${rows[0].name}, địa chỉ: ${rows[0].standardized_address}`
+    );
     return {
-      DcGiaohang: selectedRow.standardized_address,
-      District: selectedRow.district,
-      Ward: selectedRow.ward,
-      Source: "TransportDB",
+      DcGiaohang: rows[0].standardized_address,
+      District: rows[0].district,
+      Ward: rows[0].ward,
     };
   } catch (error) {
-    console.error("[findTransportCompany] Lỗi:", error.message);
-    return { remainingAddress: address };
+    console.error(
+      `[findTransportCompany] Lỗi khi tìm nhà xe ${transportName}: ${error.message}`
+    );
+    return { DcGiaohang: null, District: null, Ward: null };
   }
 }
 
-// PHÂN TÍCH THỜI GIAN KHỞI HÀNH NHÀ XE
-function parseDeliveryNoteForAddress(note) {
-  if (!note)
+/**
+ * Phân tích ghi chú giao hàng để lấy thông tin nhà xe, địa chỉ, thời gian
+ * @param {string} note
+ * @returns {Object}
+ */
+function parseDeliveryNoteForAddress(note, date_delivery) {
+  if (!note) {
     return {
       transportName: "",
       address: "",
@@ -271,33 +589,50 @@ function parseDeliveryNoteForAddress(note) {
       deliveryDate: null,
       cargoType: "",
     };
+  }
 
+  console.log(`[parseDeliveryNoteForAddress] Input note: "${note}", date_delivery: "${date_delivery}"`);
+
+  // Chuẩn hóa ghi chú
   const normalizedNote = note
     .toLowerCase()
-    .replace(/trc|truoc/g, "trước")
-    .replace(/gap/g, "gấp")
-    .replace(/sn|sớm nhất|sớm nhé/g, "sớm")
-    .replace(/nhah|nhan|nhanh len|nhanh nha/g, "nhanh")
-    .replace(/sang/g, "sáng")
-    .replace(/chiu|chiu nay/g, "chiều")
-    .replace(/toi|toi nay/g, "tối")
-    .replace(/hom nay|hnay/g, "hôm nay")
-    .replace(/mai|ngay mai/g, "ngày mai")
-    .replace(/mot|ngay mot/g, "ngày mốt")
+    .replace(/(trc|truoc|trước khi)/g, "trước")
+    .replace(/(gap|gấp|khẩn cấp|giao ngay|nhanh nhất|liền|hỏa tốc)/g, "gấp")
+    .replace(/(sn|sớm nhất|sớm nhé|sang som|sáng sớm|som mai|sớm mai|nhanh nhe|nhanh nhé|sớm giúp|sớm nha)/g, "sớm")
+    .replace(/(sang|sáng|sang mai|sáng mai|sang hom nay|sáng hôm nay|buổi sáng|sang nay|sáng nay)/g, "sáng")
+    .replace(/(chiu|chiu nay|chiều|chiều hnay|chiều hôm nay|chieu hom nay|chieu nay|buổi chiều|chiều nay)/g, "chiều")
+    .replace(/(toi|toi nay|tối nay|tối|tối hnay|tối hôm nay|toi hom nay|buổi tối|tối nay)/g, "tối")
+    .replace(/(trua|trưa|trua nay|trưa nay|trưa hnay|trưa hôm nay|buổi trưa)/g, "trưa")
+    .replace(/(hom nay|hnay|trong ngày|ngay hom nay|ngày hôm nay|today|nay|ngày nay)/g, "hôm nay")
+    .replace(/(mai|ngay mai|bữa sau|bua sau|hom sau|hôm sau|ngày mai|tomorrow)/g, "ngày mai")
+    .replace(/(mot|ngay mot|mốt|2 ngày nữa|hai ngay nua|2 bữa nữa|hai bua nua|2 hôm nữa|hai hom nua|day after tomorrow)/g, "ngày mốt")
+    .replace(/(ngay kia|ngày kia|3 ngay nua|3 hôm nữa|ba ngay nua|ba hom nua|3 days later)/g, "ngày kia")
+    .replace(/(khong|ko|không|k)\b/g, "không")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*2|T2|monday)\b/gi, "$1 thứ hai tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*3|T3|tuesday)\b/gi, "$1 thứ ba tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*4|T4|wednesday)\b/gi, "$1 thứ tư tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*5|T5|thursday)\b/gi, "$1 thứ năm tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*6|T6|friday)\b/gi, "$1 thứ sáu tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(thứ\s*7|T7|saturday)\b/gi, "$1 thứ bảy tuần tới")
+    .replace(/(sáng|trưa|chiều|tối)?\s*(cn|chủ nhật|sunday)\b/gi, "$1 chủ nhật tuần tới")
     .replace(/\s+/g, " ")
     .trim();
 
-  const transportMatch = normalizedNote.match(
-    /(?:nhà xe|xe|chành xe|gửi xe)\s*[:\-]?\s*([\w\s]+?)(?=\s*(?:giao ở|giao tại|địa chỉ|giao đến|sáng|chiều|tối|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
-  );
+  console.log(`[parseDeliveryNoteForAddress] Normalized note: "${normalizedNote}"`);
+
+  // Trích xuất tên nhà xe
   let transportName = "";
+  const transportMatch = normalizedNote.match(
+    /(?:nhà xe|xe|chành xe|gửi xe)\s*[:\-]?\s*([\w\s]+?)(?=\s*(?:giao ở|giao tại|địa chỉ|giao đến|sáng|trưa|chiều|tối|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
+  );
   if (transportMatch) {
     transportName = transportMatch[1].trim();
   }
 
+  // Trích xuất địa chỉ giao hàng
   let address = "";
   const addressMatch = normalizedNote.match(
-    /(?:giao ở|giao tại|địa chỉ|giao đến|địa chỉ giao hàng|giao)\s*[:\-]?\s*(\d+\s+[^\d,]+(?:,\s*[^\d,]+)*)(?=\s*(?:sáng|chiều|tối|gấp|nhanh|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
+    /(?:giao ở|giao tại|địa chỉ|giao đến|đc|giao hàng|GH)\s*[:\-]?\s*([^;]*(?:kho\s*\w+)?\s*\d+\s*[-\/]?\s*\d*\s*[^\d,;:]+(?:,\s*[^\d,;:]+)*)(?=\s*(?:sáng|trưa|chiều|tối|gấp|sớm|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
   );
   if (addressMatch) {
     address = addressMatch[1].trim();
@@ -305,38 +640,123 @@ function parseDeliveryNoteForAddress(note) {
     const potentialAddress = normalizedNote
       .replace(/(?:xe|nhà xe|chành xe|gửi xe)\s*[:\-]?\s*[\w\s]+/i, "")
       .replace(
-        /(?:giao vào|giao trước|giao gấp|giao nhanh|hàng dễ vỡ|hàng nặng|hàng gấp|hàng lạnh|hàng tươi|sáng|chiều|tối|hôm nay|ngày mai|ngày mốt|thứ [a-z]+)\s*[:\-]?\s*[\w\s]+/gi,
+        /(?:giao vào|giao trước|giao gấp|giao sớm|sáng|trưa|chiều|tối|hôm nay|ngày mai|ngày mốt|thứ [a-z]+)\s*[:\-]?\s*[\w\s]+/gi,
         ""
       )
       .trim();
-    if (potentialAddress.match(/\d+\s+[^\d\s]+/i)) {
+    if (potentialAddress.match(/(?:\d+\s*[-\/]?\s*\d*|[kK][hH][oO]\s*\w+)\s+[^\d\s]+/i)) {
       address = potentialAddress;
     }
   }
 
-  const timeHintMatch = normalizedNote.match(
-    /(?:giao vào|giao trước)\s*[:\-]?\s*(sáng|chiều|tối|\d{1,2}(?::\d{2})?(?:h|am|pm)?)(?=\s|$)/i
-  );
-  const timeHint = timeHintMatch
-    ? timeHintMatch[1]
-    : normalizedNote.match(/\b(sáng|chiều|tối)\b/i)?.[0] || null;
+  // Trích xuất thời gian giao hàng
+  let timeHint = null;
+  let deliveryDate = null;
+  let priority = 0;
 
-  const priorityMatch = normalizedNote.match(
-    /\b(gấp|nhanh|sớm|khẩn cấp|hỏa tốc|mau lên)\b/i
+  // Xử lý trường hợp đặc biệt: "GIAO GẤP TRƯỚC XH..."
+  const urgentTimeMatch = normalizedNote.match(
+    /gấp\s*(?:trước|truoc)\s*(\d{1,2}(?::\d{2})?(?:h|am|pm)?)(?:\s*thì\s*giao)?(?:\s*,?\s*(?:ko|không)\s*thì\s*(thứ\s*[2-7]|T2|T3|T4|T5|T6|T7|cn))?/i
   );
-  const priority = priorityMatch ? 1 : 0;
+  if (urgentTimeMatch) {
+    timeHint = urgentTimeMatch[1];
+    priority = 2;
+    const deliveryTime = date_delivery ? moment(date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh") : moment().tz("Asia/Ho_Chi_Minh");
+    if (!deliveryTime.isValid()) {
+      console.warn(`[parseDeliveryNoteForAddress] date_delivery không hợp lệ: "${date_delivery}", sử dụng thời gian hiện tại`);
+      deliveryTime = moment().tz("Asia/Ho_Chi_Minh");
+    }
 
-  const deliveryDateMatch = normalizedNote.match(
-    /\b(hôm nay|ngày mai|ngày mốt|thứ hai|thứ ba|thứ tư|thứ năm|thứ sáu|thứ bảy|chủ nhật)\b/i
-  );
-  const deliveryDate = deliveryDateMatch ? deliveryDateMatch[0] : null;
+    const hourMatch = timeHint.match(/(\d{1,2})(?::(\d{2}))?(h|am|pm)?/i);
+    let hour = parseInt(hourMatch[1], 10);
+    const minute = hourMatch[2] ? parseInt(hourMatch[2], 10) : 0;
+    const period = hourMatch[3] ? hourMatch[3].toLowerCase() : "h";
+    if (period === "pm" && hour < 12) hour += 12;
+    else if (period === "am" && hour === 12) hour = 0;
 
+    const deadlineTime = deliveryTime.clone().startOf("day").add(hour, "hours").add(minute, "minutes");
+
+    // Tính thời gian giao dự kiến: date_delivery + travel_time + 15 phút
+    const travelTime = 15; // Giả sử travel_time mặc định là 15 phút
+    const estimatedDelivery = deliveryTime.clone().add(travelTime + 15, "minutes");
+
+    if (estimatedDelivery.isBefore(deadlineTime)) {
+      // Thời gian giao dự kiến trước 12h, giữ ngày hiện tại và gán timeHint là thời gian giao dự kiến
+      deliveryDate = deliveryTime.format("DD/MM/YYYY");
+      timeHint = estimatedDelivery.format("HH:mm:ss");
+    } else if (urgentTimeMatch[2]) {
+      // Thời gian giao dự kiến quá 12h, chuyển sang thứ 2 tuần tới
+      deliveryDate = "thứ hai tuần tới";
+      timeHint = "sáng"; // Giao sớm vào thứ 2
+      priority = 1;
+    }
+  } else {
+    // Phát hiện giờ cụ thể
+    const specificTimeMatch = normalizedNote.match(
+      /(?:giao trước|trước|giao vào|giao lúc|giao\s+)(\d{1,2}(?::\d{2})?(?:h|am|pm)?)/i
+    );
+    if (specificTimeMatch) {
+      timeHint = specificTimeMatch[1];
+      priority = 2;
+    } else {
+      const timeRangeMatch = normalizedNote.match(
+        /(?:giao vào|giao trước|giao trong)\s*[:\-]?\s*(\d{1,2}\s*đến\s*\d{1,2}\s*h)/i
+      );
+      if (timeRangeMatch) {
+        timeHint = timeRangeMatch[1];
+        priority = 2;
+      } else {
+        const timeHintMatch = normalizedNote.match(
+          /\b(sáng|trưa|chiều|tối)\b/i
+        );
+        if (timeHintMatch) {
+          timeHint = timeHintMatch[0];
+          priority = 1;
+        }
+      }
+    }
+
+    // Phát hiện ngày giao hàng
+    const specificDateMatch = normalizedNote.match(
+      /(?:giao ngày|giao vào ngày|giao lúc|giao|thứ\s*[2-7]\s*\(|T2|T3|T4|T5|T6|T7|cn\s*|\()(\d{2}[.\/]\d{2}(?:[.\/]\d{4})?|\d{2}\/\d{2})/i
+    );
+    if (specificDateMatch) {
+      let dateStr = specificDateMatch[1].replace(/[.-]/g, "/");
+      if (!dateStr.includes("/202")) {
+        dateStr += `/2025`;
+      }
+      if (moment(dateStr, "DD/MM/YYYY", true).isValid()) {
+        deliveryDate = dateStr;
+        priority = priority || 1;
+      }
+    }
+
+    // Phát hiện ngày trong tuần và các từ khóa khác
+    if (!deliveryDate) {
+      const deliveryDateMatch = normalizedNote.match(
+        /\b(hôm nay|ngày mai|ngày mốt|thứ hai tuần tới|thứ ba tuần tới|thứ tư tuần tới|thứ năm tuần tới|thứ sáu tuần tới|thứ bảy tuần tới|chủ nhật tuần tới)\b/i
+      );
+      deliveryDate = deliveryDateMatch ? deliveryDateMatch[0] : null;
+      if (deliveryDate) priority = priority || 1;
+    }
+  }
+
+  // Xử lý trường hợp "gấp"
+  if (normalizedNote.includes("gấp") && !urgentTimeMatch) {
+    priority = 2;
+    if (!deliveryDate) {
+      const deliveryTime = date_delivery ? moment(date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh") : moment().tz("Asia/Ho_Chi_Minh");
+      deliveryDate = deliveryTime.format("DD/MM/YYYY");
+    }
+  }
+
+  // Phát hiện loại hàng
   const cargoTypeMatch = normalizedNote.match(
-    /\b(hàng dễ vỡ|hàng nặng|hàng gấp|hàng lạnh|hàng tươi)\b/i
+    /\b(hàng dễ vỡ|hàng nặng|hàng gấp|hàng lạnh|hàng tươi|hàng cồng kềnh|hàng nguy hiểm|hàng giá trị cao)\b/i
   );
   const cargoType = cargoTypeMatch ? cargoTypeMatch[0] : "";
 
-  return {
+  const result = {
     transportName,
     address,
     timeHint,
@@ -344,6 +764,9 @@ function parseDeliveryNoteForAddress(note) {
     deliveryDate,
     cargoType,
   };
+
+  console.log(`[parseDeliveryNoteForAddress] Result:`, result);
+  return result;
 }
 
 // =========================================================== REGEX ĐỊA CHỈ GIAO HÀNG =========================================================
@@ -413,19 +836,54 @@ function cleanAddress(address) {
     .trim();
 }
 
+/**
+ * Tách thông tin nhà xe từ địa chỉ
+ * @param {string} address
+ * @returns {Object}
+ */
 function extractTransportInfo(address) {
   if (!address) return { transportName: "", transportAddress: "" };
 
-  // Regex để tách tên nhà xe và địa chỉ nhà xe (trong ngoặc hoặc sau tên nhà xe)
-  const transportMatch = address.match(
-    /^(Nhà xe|Xe|Chành xe|Gửi xe)\s*[:\-]?\s*([^,;\-\/]+?)(?:\s*\(([^)]+)\)|\s*(?:,|;|\/\/|\-|\/|$))?/i
+  // Loại bỏ số điện thoại và nội dung trong ngoặc
+  const cleanedAddress = address
+    .replace(/\b\d{10,11}\b/g, "") // Xóa số điện thoại
+    .replace(/\([^)]+\)/g, "") // Xóa nội dung trong ngoặc
+    .replace(/\s{2,}/g, " ") // Chuẩn hóa khoảng trắng
+    .trim();
+
+  // Regex cải tiến để tách tên nhà xe đầy đủ
+  const transportMatch = cleanedAddress.match(
+    /^(?:Nhà xe|Xe|Chành xe|Gửi xe)\s*[:\-]?\s*([^,;\-\/]+?)(?=\s*(?:,|;|\/\/|\-|\/|$))/i
   );
 
   if (transportMatch) {
+    let transportName = transportMatch[1].trim();
+    // Loại bỏ các từ khóa không phải tên nhà xe
+    transportName = transportName
+      .replace(/\b(Cty|Công ty|Song linh|NGƯỜI NHẬN)\b/i, "")
+      .trim();
     return {
-      transportName: transportMatch[2].trim(),
-      transportAddress: transportMatch[3] ? transportMatch[3].trim() : "",
+      transportName,
+      transportAddress: "",
     };
+  }
+
+  // Nếu không khớp regex, thử tách dựa trên các phần tử phân cách
+  const parts = cleanedAddress.split(/[,;\-\/]/);
+  for (const part of parts) {
+    const nameMatch = part.match(
+      /^(?:Nhà xe|Xe|Chành xe|Gửi xe)\s*[:\-]?\s*([^]+)/i
+    );
+    if (nameMatch) {
+      let transportName = nameMatch[1].trim();
+      transportName = transportName
+        .replace(/\b(Cty|Công ty|Song linh|NGƯỜI NHẬN)\b/i, "")
+        .trim();
+      return {
+        transportName,
+        transportAddress: "",
+      };
+    }
   }
 
   return { transportName: "", transportAddress: "" };
@@ -1243,16 +1701,18 @@ async function callOpenAI(maPX, address) {
 }
 
 // ========================================================= CHUẨN HÓA ĐỊA CHỈ =========================================================
-// CHUẨN HÓA ĐỊA CHỈ BẰNG OPENAI
+/**
+ * Chuẩn hóa địa chỉ cho danh sách đơn hàng chưa có trong orders_address
+ * @param {Array} orders
+ * @returns {Promise<Array>}
+ */
 async function standardizeAddresses(orders) {
   const startTime = Date.now();
   let openAICalls = 0;
   try {
     const limit = pLimit(2);
     if (!orders || !Array.isArray(orders) || orders.length === 0) {
-      console.log(
-        "[standardizeAddresses] Không có đơn hàng nào để xử lý, orders: []"
-      );
+      console.log("[standardizeAddresses] Không có đơn hàng nào để xử lý");
       return [];
     }
 
@@ -1260,116 +1720,100 @@ async function standardizeAddresses(orders) {
       `[standardizeAddresses] Bắt đầu xử lý ${orders.length} đơn hàng`
     );
 
-    const orderIds = orders.map((order) => order.MaPX).filter(Boolean);
+    // Log cấu trúc của orders để debug
+    console.log(
+      "[standardizeAddresses] Cấu trúc đơn hàng đầu tiên:",
+      orders[0]
+    );
+
+    // Ánh xạ id_order, hỗ trợ cả MaPX nếu dữ liệu đầu vào sử dụng
+    const orderIds = orders
+      .map((order) => order.id_order || order.MaPX)
+      .filter(Boolean); // Lọc các giá trị hợp lệ (không null, undefined, rỗng)
+
     if (orderIds.length === 0) {
-      console.log("[standardizeAddresses] Không có MaPX hợp lệ để chuẩn hóa");
+      console.log(
+        "[standardizeAddresses] Không có orders.id_order hoặc MaPX hợp lệ để chuẩn hóa"
+      );
+      // Log chi tiết các đơn không hợp lệ
+      console.log(
+        "[standardizeAddresses] Các đơn không có id_order/MaPX:",
+        orders
+          .filter((order) => !order.id_order && !order.MaPX)
+          .map((order) => JSON.stringify(order))
+      );
       return [];
     }
 
-    const connection = await createConnectionWithRetry();
-    const [existingAddresses] = await connection.query(
-      `SELECT id_order, address, district, ward, source FROM orders_address
-       WHERE id_order IN (${orderIds.map(() => "?").join(",")})`,
-      orderIds
+    console.log(
+      `[standardizeAddresses] Số orders.id_order hợp lệ: ${orderIds.length}`
     );
-    const [orderDetails] = await connection.query(
-      `SELECT o.id_order, o.date_delivery, oa.travel_time, o.address AS current_address, o.delivery_note, o.SOKM, o.DiachiTruSo
+
+    const connection = await createConnectionWithRetry();
+    // Chỉ lấy các đơn chưa có trong orders_address
+    const [unstandardizedOrders] = await connection.query(
+      `SELECT o.id_order, o.address, o.delivery_note, o.DiachiTruSo, o.date_delivery, o.SOKM
        FROM orders o
        LEFT JOIN orders_address oa ON o.id_order = oa.id_order
-       WHERE o.id_order IN (${orderIds.map(() => "?").join(",")})`,
+       WHERE o.id_order IN (${orderIds.map(() => "?").join(",")})
+         AND oa.id_order IS NULL`,
       orderIds
     );
     await connection.end();
 
-    const addressMap = new Map(
-      existingAddresses.map((row) => [row.id_order, row])
-    );
-    const orderDetailMap = new Map(
-      orderDetails.map((row) => [row.id_order, row])
-    );
-    const results = [];
+    if (unstandardizedOrders.length === 0) {
+      console.log(
+        "[standardizeAddresses] Không có đơn hàng nào chưa được chuẩn hóa trong cơ sở dữ liệu"
+      );
+      return [];
+    }
 
+    console.log(
+      `[standardizeAddresses] Số đơn hàng cần chuẩn hóa: ${unstandardizedOrders.length}`
+    );
+
+    const results = [];
     const batchSize = 50;
-    for (let i = 0; i < orders.length; i += batchSize) {
+    for (let i = 0; i < unstandardizedOrders.length; i += batchSize) {
       console.log(
         `[standardizeAddresses] Xử lý batch từ ${i} đến ${Math.min(
           i + batchSize,
-          orders.length
+          unstandardizedOrders.length
         )}`
       );
-      const batch = orders.slice(i, i + batchSize);
+      const batch = unstandardizedOrders.slice(i, i + batchSize);
       const batchResults = await Promise.all(
         batch.map((order) =>
           limit(async () => {
             const orderStartTime = Date.now();
-            const MaPX = order.MaPX;
-            const DcGiaohang = order.DcGiaohang;
-            const existingAddress = addressMap.get(MaPX);
-            const orderDetail = orderDetailMap.get(MaPX);
+            const id_order = order.id_order;
 
-            if (
-              existingAddress &&
-              existingAddress.address &&
-              existingAddress.district &&
-              existingAddress.ward &&
-              orderDetail?.current_address === DcGiaohang
-            ) {
-              console.log(
-                `[standardizeAddresses] Bỏ qua MaPX ${MaPX}: Địa chỉ đã chuẩn hóa`
-              );
-              return { ...existingAddress, MaPX, isEmpty: false };
-            }
-
-            const addressToProcess = !DcGiaohang
-              ? orderDetail?.DiachiTruSo || ""
-              : DcGiaohang;
-
-            if (!addressToProcess) {
-              const SOKM =
-                orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
-                  ? parseFloat(orderDetail.SOKM)
-                  : null;
-              const travelTime = SOKM
-                ? getTravelTimeByTimeFrame(SOKM, orderDetail?.date_delivery)
-                : 0;
-              const result = {
-                MaPX,
-                DcGiaohang: "",
-                District: null,
-                Ward: null,
-                Source: "Empty",
-                isEmpty: true,
-                distance: SOKM || 0,
-                travel_time: travelTime,
-                priority: order.priority || 0,
-                deliveryDate: order.deliveryDate || "",
-                cargoType: order.cargoType || "",
-              };
-              return result;
-            }
+            const addressToProcess = !order.address
+              ? order.DiachiTruSo || ""
+              : order.address;
 
             if (!isValidAddress(addressToProcess)) {
               const SOKM =
-                orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
-                  ? parseFloat(orderDetail.SOKM)
+                order.SOKM && !isNaN(parseFloat(order.SOKM))
+                  ? parseFloat(order.SOKM)
                   : null;
-              const travelTime = SOKM
-                ? getTravelTimeByTimeFrame(SOKM, orderDetail?.date_delivery)
-                : 0;
-              const result = {
-                MaPX,
-                DcGiaohang: addressToProcess,
-                District: null,
-                Ward: null,
-                Source: "Invalid",
+              const travelTime =
+                SOKM && SOKM !== 0
+                  ? getTravelTimeByTimeFrame(SOKM, order.date_delivery)
+                  : null;
+              return {
+                id_order,
+                address: addressToProcess,
+                district: null,
+                ward: null,
+                source: "Invalid",
                 isEmpty: true,
-                distance: SOKM || 0,
+                distance: SOKM && SOKM !== 0 ? SOKM : null,
                 travel_time: travelTime,
-                priority: order.priority || 0,
-                deliveryDate: order.deliveryDate || "",
-                cargoType: order.cargoType || "",
+                priority: 0,
+                deliveryDate: "",
+                cargoType: "",
               };
-              return result;
             }
 
             const expressKeywords = ["chuyển phát nhanh", "cpn"];
@@ -1377,182 +1821,38 @@ async function standardizeAddresses(orders) {
               addressToProcess.toLowerCase().includes(keyword)
             );
             if (isExpressDelivery) {
-              const result = {
-                MaPX,
-                DcGiaohang: addressToProcess,
-                District: null,
-                Ward: null,
-                Source: "Express",
-                isEmpty: false,
-                distance: 0,
-                travel_time: 0,
-                priority: order.priority || 0,
-                deliveryDate: order.deliveryDate || "",
-                cargoType: order.cargoType || "",
-              };
-              return result;
-            }
-
-            const noteInfo = parseDeliveryNoteForAddress(
-              orderDetail?.delivery_note
-            );
-            const isTransport = isTransportAddress(addressToProcess);
-            const { cleanedAddress, transportName, specificAddress } =
-              preprocessAddress(addressToProcess);
-
-            const cacheResult = await checkRouteCache(
-              cleanedAddress,
-              addressToProcess
-            );
-            if (cacheResult) {
-              const result = {
-                MaPX,
-                DcGiaohang: cacheResult.standardized_address,
-                District: cacheResult.district,
-                Ward: cacheResult.ward,
-                Source: "RouteCache",
-                isEmpty: false,
-                distance: cacheResult.distance,
-                travel_time: cacheResult.travel_time,
-                priority: noteInfo.priority || 0,
-                deliveryDate: noteInfo.deliveryDate || "",
-                cargoType: noteInfo.cargoType || "",
-              };
-              return result;
-            }
-
-            if (isTransport && transportName) {
-              const transportResult = await findTransportCompany(
-                addressToProcess,
-                orderDetail?.date_delivery,
-                orderDetail?.travel_time || 15,
-                MaPX,
-                transportName,
-                noteInfo.timeHint || ""
-              );
-              if (transportResult.DcGiaohang) {
-                const result = {
-                  MaPX,
-                  DcGiaohang: transportResult.DcGiaohang,
-                  District: transportResult.District,
-                  Ward: transportResult.Ward,
-                  Source: "TransportDB",
-                  isEmpty: false,
-                  distance: null,
-                  travel_time: null,
-                  priority: noteInfo.priority || 0,
-                  deliveryDate: noteInfo.deliveryDate || "",
-                  cargoType: noteInfo.cargoType || "",
-                };
-                return result;
-              }
-            }
-
-            const addressToStandardize =
-              specificAddress || cleanedAddress || addressToProcess;
-            let openAIResult = await callOpenAI(MaPX, addressToStandardize);
-            openAICalls++;
-
-            if (
-              openAIResult &&
-              openAIResult.DcGiaohang &&
-              openAIResult.District &&
-              openAIResult.Ward
-            ) {
-              const result = {
-                MaPX,
-                DcGiaohang: openAIResult.DcGiaohang,
-                District: openAIResult.District,
-                Ward: openAIResult.Ward,
-                Source: "OpenAI",
+              return {
+                id_order,
+                address: addressToProcess,
+                district: null,
+                ward: null,
+                source: "Express",
                 isEmpty: false,
                 distance: null,
                 travel_time: null,
-                priority: noteInfo.priority || 0,
-                deliveryDate: noteInfo.deliveryDate || "",
-                cargoType: noteInfo.cargoType || "",
+                priority: 0,
+                deliveryDate: "",
+                cargoType: "",
               };
-              return result;
             }
 
-            if (
-              orderDetail?.DiachiTruSo &&
-              orderDetail.DiachiTruSo !== addressToProcess
-            ) {
-              const fallbackAddress = preprocessAddress(
-                orderDetail.DiachiTruSo
-              );
-              const fallbackCache = await checkRouteCache(
-                fallbackAddress.cleanedAddress,
-                orderDetail.DiachiTruSo
-              );
-              if (fallbackCache) {
-                const result = {
-                  MaPX,
-                  DcGiaohang: fallbackCache.standardized_address,
-                  District: fallbackCache.district,
-                  Ward: fallbackCache.ward,
-                  Source: "RouteCache",
-                  isEmpty: false,
-                  distance: fallbackCache.distance,
-                  travel_time: fallbackCache.travel_time,
-                  priority: noteInfo.priority || 0,
-                  deliveryDate: noteInfo.deliveryDate || "",
-                  cargoType: noteInfo.cargoType || "",
-                };
-                return result;
-              }
+            // Sử dụng analyzeAddress để xử lý
+            const result = await analyzeAddress(
+              id_order,
+              addressToProcess,
+              order.delivery_note || "",
+              order.DiachiTruSo || "",
+              order.date_delivery || "",
+              order.SOKM || 0
+            );
+            openAICalls++;
 
-              openAIResult = await callOpenAI(
-                MaPX,
-                fallbackAddress.cleanedAddress
-              );
-              openAICalls++;
-
-              if (
-                openAIResult &&
-                openAIResult.DcGiaohang &&
-                openAIResult.District &&
-                openAIResult.Ward
-              ) {
-                const result = {
-                  MaPX,
-                  DcGiaohang: openAIResult.DcGiaohang,
-                  District: openAIResult.District,
-                  Ward: openAIResult.Ward,
-                  Source: "OpenAI",
-                  isEmpty: false,
-                  distance: null,
-                  travel_time: null,
-                  priority: noteInfo.priority || 0,
-                  deliveryDate: noteInfo.deliveryDate || "",
-                  cargoType: noteInfo.cargoType || "",
-                };
-                return result;
-              }
-            }
-
-            const SOKM =
-              orderDetail?.SOKM && !isNaN(parseFloat(orderDetail.SOKM))
-                ? parseFloat(orderDetail.SOKM)
-                : null;
-            const travelTime = SOKM
-              ? getTravelTimeByTimeFrame(SOKM, orderDetail?.date_delivery)
-              : 0;
-            const result = {
-              MaPX,
-              DcGiaohang: addressToProcess,
-              District: null,
-              Ward: null,
-              Source: "Original",
-              isEmpty: false,
-              distance: SOKM || 0,
-              travel_time: travelTime,
-              priority: order.priority || 0,
-              deliveryDate: order.deliveryDate || "",
-              cargoType: order.cargoType || "",
+            return {
+              ...result,
+              priority: 0,
+              deliveryDate: "",
+              cargoType: "",
             };
-            return result;
           })
         )
       );
@@ -1561,19 +1861,19 @@ async function standardizeAddresses(orders) {
 
     const validOrderIds = await getValidOrderIds();
     const validResults = results.filter((order) =>
-      validOrderIds.has(order.MaPX)
+      validOrderIds.has(order.id_order)
     );
 
     if (validResults.length > 0) {
       const connection = await createConnectionWithRetry();
       const values = validResults
-        .filter((order) => order.DcGiaohang !== undefined)
+        .filter((order) => order.address !== undefined)
         .map((order) => [
-          order.MaPX,
-          order.DcGiaohang || "",
-          order.District,
-          order.Ward,
-          order.Source,
+          order.id_order,
+          order.address || "",
+          order.district,
+          order.ward,
+          order.source,
           order.distance,
           order.travel_time,
         ]);
@@ -2949,565 +3249,571 @@ async function groupOrders2(page = 1, filterDate = null) {
 }
 
 // =========================================================== PHÂN TÍCH GHI CHÚ GIAO HÀNG ===========================================================
-// PHÂN TÍCH GHI CHÚ GIAO HÀNG
+/**
+ * Phân tích ghi chú giao hàng và cập nhật priority, delivery_deadline, analyzed
+ * - Đơn có thay đổi: cập nhật priority, delivery_deadline, analyzed = 1
+ * - Đơn không có thay đổi: chỉ cập nhật analyzed = 1
+ * - Sử dụng transaction và cập nhật từng đơn riêng lẻ để tránh lỗi toàn bộ
+ */
 async function analyzeDeliveryNote() {
-    const startTime = Date.now();
-    try {
-        // Kết nối cơ sở dữ liệu
-        const connection = await createConnectionWithRetry();
+  const startTime = Date.now();
+  let connection;
+  try {
+    connection = await createConnectionWithRetry();
+    await connection.beginTransaction();
+    console.log("[analyzeDeliveryNote] Bắt đầu transaction");
 
-        // Truy vấn các đơn hàng chưa được phân tích
-        const [orders] = await connection.query(
-            `
-            SELECT o.id_order, o.delivery_note, o.date_delivery, oa.travel_time
-            FROM orders o
-            LEFT JOIN orders_address oa ON o.id_order = oa.id_order
-            WHERE o.status = 'Chờ xác nhận giao/lấy hàng'
-                AND o.priority = 0
-                AND o.delivery_deadline IS NULL
-                AND o.analyzed = 0
-                AND o.delivery_note IS NOT NULL
-                AND o.delivery_note != ''
-                AND o.date_delivery IS NOT NULL
-            `
+    // Kiểm tra delivery_deadline không hợp lệ
+    const [invalidRows] = await connection.query(
+      `SELECT id_order, delivery_deadline
+       FROM orders
+       WHERE delivery_deadline IS NOT NULL
+       AND delivery_deadline NOT REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'
+       LIMIT 10`
+    );
+    if (invalidRows.length > 0) {
+      console.warn(
+        "[analyzeDeliveryNote] Phát hiện delivery_deadline không hợp lệ:"
+      );
+      invalidRows.forEach((row) => {
+        console.warn(
+          `Đơn ${row.id_order}: delivery_deadline = "${row.delivery_deadline}"`
+        );
+      });
+      await connection.query(
+        `UPDATE orders
+         SET delivery_deadline = NULL
+         WHERE delivery_deadline IS NOT NULL
+         AND delivery_deadline NOT REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}$'`
+      );
+      console.log(
+        "[analyzeDeliveryNote] Đã sửa các delivery_deadline không hợp lệ thành NULL"
+      );
+    }
+
+    // Truy vấn đơn hàng chưa phân tích
+    const [orders] = await connection.query(
+      `
+      SELECT o.id_order, o.delivery_note, o.date_delivery, oa.travel_time
+      FROM orders o
+      LEFT JOIN orders_address oa ON o.id_order = oa.id_order
+      WHERE o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND o.priority = 0
+        AND o.delivery_deadline IS NULL
+        AND o.analyzed = 0
+        AND o.delivery_note IS NOT NULL
+        AND o.delivery_note != ''
+        AND o.date_delivery IS NOT NULL
+      `
+    );
+
+    console.log(`Số lượng đơn hàng cần phân tích: ${orders.length}`);
+
+    if (orders.length === 0) {
+      console.log("[analyzeDeliveryNote] Không có đơn hàng cần phân tích");
+      await connection.commit();
+      await connection.end();
+      console.log(
+        `[analyzeDeliveryNote] Thực thi trong ${Date.now() - startTime}ms`
+      );
+      return;
+    }
+
+    // Danh sách ngày lễ
+    const holidays = [
+      { name: "giỗ tổ hùng vương", date: moment("29/03/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "ngày giải phóng", date: moment("30/04/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "quốc tế lao động", date: moment("01/05/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "quốc khánh", date: moment("02/09/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "tết nguyên đán", date: moment("30/01/2026", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "trăng rằm trung thu", date: moment("12/09/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+      { name: "noel", date: moment("25/12/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
+    ];
+
+    const analyzedOrders = [];
+    const priorityUpdates = [];
+    const addressUpdates = [];
+    const limit = pLimit(50);
+
+    const parseDeliveryNote = (note, travelTime, order) => {
+      try {
+        analyzedOrders.push([order.id_order]);
+
+        const deliveryTime = moment(order.date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh");
+        if (!deliveryTime.isValid()) {
+          console.warn(
+            `Đơn ${order.id_order}: date_delivery không hợp lệ: ${order.date_delivery}`
+          );
+          return {
+            id_order: order.id_order,
+            priority: 0,
+            delivery_deadline: null,
+            address: null,
+          };
+        }
+
+        // Truyền date_delivery vào parseDeliveryNoteForAddress
+        const noteInfo = parseDeliveryNoteForAddress(note, order.date_delivery);
+        let { timeHint, priority: notePriority, deliveryDate, address } = noteInfo;
+
+        if (!timeHint || timeHint === "0" || timeHint === "") {
+          timeHint = null;
+        }
+        if (!deliveryDate || deliveryDate === "0" || deliveryDate === "") {
+          deliveryDate = null;
+        }
+        if (!notePriority || isNaN(notePriority)) {
+          notePriority = 0;
+        }
+
+        console.log(
+          `Đơn ${order.id_order}: timeHint="${timeHint}", deliveryDate="${deliveryDate}", notePriority=${notePriority}, address="${address}"`
         );
 
-        console.log(`Số lượng đơn hàng cần phân tích ghi chú: ${orders.length}`);
+        let deliveryDeadline = null;
+        let priority = notePriority;
+        let hasKeyword = !!deliveryDate || !!timeHint || note.toLowerCase().includes("gấp") || note.toLowerCase().includes("sớm");
 
-        if (orders.length === 0) {
-            console.log("[analyzeDeliveryNote] Không có đơn hàng có ghi chú cần phân tích");
-            await connection.end();
-            console.log(`[analyzeDeliveryNote] Thực thi trong ${Date.now() - startTime}ms`);
-            return;
+        let newAddress = null;
+        if (address && isValidAddress(address)) {
+          newAddress = address;
+          hasKeyword = true;
         }
 
-        // Khởi tạo danh sách để lưu các đơn hàng đã phân tích và cần cập nhật
-        const analyzedOrders = [];
-        const priorityUpdates = [];
-        const limit = pLimit(50);
+        if (!hasKeyword) {
+          console.log(
+            `Đơn ${order.id_order}: Không tìm thấy từ khóa thời gian, gán delivery_deadline=null, priority=0`
+          );
+          return {
+            id_order: order.id_order,
+            priority: 0,
+            delivery_deadline: null,
+            address: null,
+          };
+        }
 
-        // Hàm phân tích ghi chú giao hàng
-        const parseDeliveryNote = (note, travelTime, order) => {
-            try {
-                // Luôn thêm đơn hàng vào analyzedOrders
-                analyzedOrders.push([order.id_order]);
-
-                // Kiểm tra tính hợp lệ của date_delivery
-                const deliveryTime = moment(order.date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh");
-                if (!deliveryTime.isValid()) {
-                    console.warn(`Đơn ${order.id_order}: date_delivery không hợp lệ: ${order.date_delivery}`);
-                    return { id_order: order.id_order, priority: 0, delivery_deadline: null };
-                }
-
-                // Khởi tạo biến
-                let deliveryDeadline = null;
-                let priority = 0;
-                let deliveryDateMoment = deliveryTime.clone();
-                let hasKeyword = false; // Theo dõi xem có từ khóa thời gian không
-
-                // Danh sách ngày lễ Việt Nam (năm 2025/2026)
-                const holidays = [
-                    { name: "giỗ tổ hùng vương", date: moment("29/03/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "ngày giải phóng", date: moment("30/04/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "quốc tế lao động", date: moment("01/05/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "quốc khánh", date: moment("02/09/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "tết nguyên đán", date: moment("30/01/2026", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "trăng rằm trung thu", date: moment("12/09/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                    { name: "noel", date: moment("25/12/2025", "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh") },
-                ];
-
-                // Chuẩn hóa ghi chú
-                const normalizedNote = note
-                    .toLowerCase()
-                    .replace(/trc|truoc|trước khi/g, "trước")
-                    .replace(/gap|gấp|giaogap|giao gấp|nhanh nhất|lien|liền/g, "gấp")
-                    .replace(/sn|sớm nhất|sớm nhé|som nhat|som nhe|sớm nha/g, "sớm")
-                    .replace(/nhah|nhan|nhanh len|nhanh nha|nhanh nhất|nhanh nhat/g, "nhanh")
-                    .replace(/sang|sáng|sang mai|sáng mai|sang hom nay|sáng hôm nay/g, "sáng")
-                    .replace(/chiu|chiu nay|chiều|chiều hnay|chiều hôm nay|chieu hom nay|chieu nay/g, "chiều")
-                    .replace(/toi|toi nay|tối nay|tối|tối hnay|tối hôm nay|toi hom nay/g, "tối")
-                    .replace(/hom nay|hnay|trong ngày|ngay hom nay|ngày hôm nay/g, "hôm nay")
-                    .replace(/tuan nay|trong tuan|trong tuần|tuần này|tuan ni/g, "tuần này")
-                    .replace(/tuan sau|trong tuan sau|trong tuần sau|tuần sau|qua tuần|tuan toi|tuần tới/g, "tuần sau")
-                    .replace(/dau tuan sau|đầu tuần sau|dau tuan toi|đầu tuần tới/g, "đầu tuần sau")
-                    .replace(/cuoi tuan nay|cuối tuần này|cuoi tuan ni|cuối tuần ni/g, "cuối tuần này")
-                    .replace(/cuoi tuan sau|cuối tuần sau|cuoi tuan toi|cuối tuần tới/g, "cuối tuần sau")
-                    .replace(/thang sau|tháng sau|trong thang sau|trong tháng sau|thang toi|tháng tới/g, "tháng sau")
-                    .replace(/dau thang sau|đầu tháng sau|dau thang toi|đầu tháng tới/g, "đầu tháng sau")
-                    .replace(/giua thang sau|giữa tháng sau|giua thang toi|giữa tháng tới/g, "giữa tháng sau")
-                    .replace(/cuoi thang sau|cuối tháng sau|cuoi thang toi|cuối tháng tới/g, "cuối tháng sau")
-                    .replace(/mai|ngay mai|bữa sau|bua sau|hom sau|hôm sau|ngày mai/g, "ngày mai")
-                    .replace(/mot|ngay mot|mốt|2 ngày nữa|hai ngay nua|2 bữa nữa|hai bua nua|2 hôm nữa|hai hom nua/g, "ngày mốt")
-                    .replace(/ngay kia|ngày kia|3 ngay nua|3 hôm nữa|ba ngay nua|ba hom nua/g, "ngày kia")
-                    .replace(/(\d+)\s*ngay nua|\d+\s*hom nua|\d+\s*buoi nua/g, (match, days) => `${days} ngày nữa`)
-                    .replace(/giao nhanh trong ngay|giao nhanh hom nay/g, "gấp hôm nay")
-                    .replace(/giao truoc tet|giao trước tết|truoc tet|trước tết|tết nguyên đán|tết âm lịch/g, "trước tết")
-                    .replace(/giao noel|giao vào noel|vao noel|vào noel/g, "noel")
-                    .replace(/giao truoc trung thu|giao trước trung thu|truoc trung thu|trước trung thu|trăng rằm/g, "trước trung thu")
-                    .replace(/giao truoc gio to|giao trước giỗ tổ|truoc gio to|trước giỗ tổ|giỗ tổ hùng vương/g, "trước giỗ tổ")
-                    .replace(/giao ngay 30\/4|giao vào 30\/4|ngày 30\/4|30 thang 4|ngày giải phóng/g, "ngày giải phóng")
-                    .replace(/giao ngay 1\/5|giao vào 1\/5|ngày 1\/5|1 thang 5|quốc tế lao động/g, "quốc tế lao động")
-                    .replace(/giao ngay 2\/9|giao vào 2\/9|ngày 2\/9|2 thang 9|quốc khánh/g, "quốc khánh")
-                    .replace(/giao khi khach o nha|giao khi khách ở nhà|khi khach o nha|khách ở nhà/g, "khi khách ở nhà")
-                    .replace(/giao sau khi lien he|giao sau khi liên hệ|sau khi lien he|sau khi liên hệ/g, "sau khi liên hệ")
-                    .replace(/thu hai tuần này|thứ hai tuần này|thu 2 tuần này|thứ 2 tuần này|thu hai tuan ni|thứ hai tuan ni/g, "thứ hai tuần này")
-                    .replace(/thu ba tuần này|thứ ba tuần này|thu 3 tuần này|thứ 3 tuần này|thu ba tuan ni|thứ ba tuan ni/g, "thứ ba tuần này")
-                    .replace(/thu tu tuần này|thứ tư tuần này|thu 4 tuần này|thứ 4 tuần này|thu tu tuan ni|thứ tư tuan ni/g, "thứ tư tuần này")
-                    .replace(/thu nam tuần này|thứ năm tuần này|thu 5 tuần này|thứ 5 tuần này|thu nam tuan ni|thứ nam tuan ni/g, "thứ năm tuần này")
-                    .replace(/thu sau tuần này|thứ sáu tuần này|thu 6 tuần này|thứ 6 tuần này|thu sau tuan ni|thứ sau tuan ni/g, "thứ sáu tuần này")
-                    .replace(/thu bay tuần này|thứ bảy tuần này|thu 7 tuần này|thứ 7 tuần này|thu bay tuan ni|thứ bay tuan ni/g, "thứ bảy tuần này")
-                    .replace(/chu nhat tuần này|chủ nhật tuần này|cn tuần này|chu nhat tuan ni|chủ nhat tuan ni/g, "chủ nhật tuần này")
-                    .replace(/thu hai tuần sau|thứ hai tuần sau|thu 2 tuần sau|thứ 2 tuần sau|thu hai tuan toi|thứ hai tuan toi/g, "thứ hai tuần sau")
-                    .replace(/thu ba tuần sau|thứ ba tuần sau|thu 3 tuần sau|thứ 3 tuần sau|thu ba tuan toi|thứ ba tuan toi/g, "thứ ba tuần sau")
-                    .replace(/thu tu tuần sau|thứ tư tuần sau|thu 4 tuần sau|thứ 4 tuần sau|thu tu tuan toi|thứ tư tuan toi/g, "thứ tư tuần sau")
-                    .replace(/thu nam tuần sau|thứ năm tuần sau|thu 5 tuần sau|thứ 5 tuần sau|thu nam tuan toi|thứ nam tuan toi/g, "thứ năm tuần sau")
-                    .replace(/thu sau tuần sau|thứ sáu tuần sau|thu 6 tuần sau|thứ 6 tuần sau|thu sau tuan toi|thứ sau tuan toi/g, "thứ sáu tuần sau")
-                    .replace(/thu bay tuần sau|thứ bảy tuần sau|thu 7 tuần sau|thứ 7 tuần sau|thu bay tuan toi|thứ bay tuan toi/g, "thứ bảy tuần sau")
-                    .replace(/chu nhat tuần sau|chủ nhật tuần sau|cn tuần sau|chu nhat tuan toi|chủ nhat tuan toi/g, "chủ nhật tuần sau")
-                    .replace(/khoang|khoảng|tu|tu\s*den|từ\s*đến/g, "đến")
-                    .replace(/\s+/g, " ")
-                    .trim();
-
-                // Phân tích ghi chú
-                const noteInfo = parseDeliveryNoteForAddress(normalizedNote);
-                let { timeHint, priority: notePriority, deliveryDate } = noteInfo;
-
-                // Kiểm tra và sửa giá trị không hợp lệ từ parseDeliveryNoteForAddress
-                if (timeHint === '0' || timeHint === 0 || timeHint === '' || timeHint === undefined || timeHint === null) {
-                    console.warn(`Đơn ${order.id_order}: timeHint không hợp lệ (${timeHint}), gán null`);
-                    timeHint = null;
-                }
-                if (deliveryDate === '0' || deliveryDate === 0 || deliveryDate === '' || deliveryDate === undefined || deliveryDate === null) {
-                    console.warn(`Đơn ${order.id_order}: deliveryDate không hợp lệ (${deliveryDate}), gán null`);
-                    deliveryDate = null;
-                }
-                if (notePriority === undefined || notePriority === null || isNaN(notePriority)) {
-                    console.warn(`Đơn ${order.id_order}: notePriority không hợp lệ (${notePriority}), gán 0`);
-                    notePriority = 0;
-                }
-
-                // Log để kiểm tra đầu ra của parseDeliveryNoteForAddress
-                console.log(`Đơn ${order.id_order}: normalizedNote="${normalizedNote}", timeHint="${timeHint}", deliveryDate="${deliveryDate}", notePriority=${notePriority}`);
-
-                priority = notePriority;
-
-                // Xác định ngày giao hàng từ ghi chú
-                const specificDateMatch = normalizedNote.match(/(?:giao ngày|giao vào ngày|giao lúc|giao)\s*(\d{2}[./]\d{2}(?:[./]\d{4})?)/i);
-                if (specificDateMatch) {
-                    let dateStr = specificDateMatch[1];
-                    dateStr = dateStr.replace(/\./g, "/");
-                    if (!dateStr.includes("/202")) {
-                        dateStr += `/2025`;
-                    }
-                    deliveryDateMoment = moment(dateStr, "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh");
-                    if (deliveryDateMoment.isValid()) {
-                        hasKeyword = true;
-                    } else {
-                        console.warn(`Đơn ${order.id_order}: Ngày cụ thể không hợp lệ (${dateStr}), bỏ qua`);
-                        hasKeyword = false;
-                    }
-                } else if (deliveryDate && typeof deliveryDate === 'string') {
-                    hasKeyword = true;
-                    const now = moment().tz("Asia/Ho_Chi_Minh");
-                    switch (deliveryDate.toLowerCase()) {
-                        case "hôm nay":
-                            deliveryDateMoment = now.clone();
-                            break;
-                        case "ngày mai":
-                            deliveryDateMoment = now.clone().add(1, "day");
-                            break;
-                        case "ngày mốt":
-                            deliveryDateMoment = now.clone().add(2, "days");
-                            break;
-                        case "ngày kia":
-                            deliveryDateMoment = now.clone().add(3, "days");
-                            break;
-                        case "tuần này":
-                            deliveryDateMoment = now.clone().endOf("week").subtract(1, "day");
-                            break;
-                        case "cuối tuần này":
-                            deliveryDateMoment = now.clone().endOf("week").subtract(1, "day");
-                            break;
-                        case "tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week").endOf("week").subtract(1, "day");
-                            break;
-                        case "đầu tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(1, "day");
-                            break;
-                        case "cuối tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week").endOf("week").subtract(1, "day");
-                            break;
-                        case "tháng sau":
-                            deliveryDateMoment = now.clone().add(1, "month").endOf("month");
-                            break;
-                        case "đầu tháng sau":
-                            deliveryDateMoment = now.clone().add(1, "month").startOf("month");
-                            break;
-                        case "giữa tháng sau":
-                            deliveryDateMoment = now.clone().add(1, "month").startOf("month").add(15, "days");
-                            break;
-                        case "cuối tháng sau":
-                            deliveryDateMoment = now.clone().add(1, "month").endOf("month");
-                            break;
-                        case "trước tết":
-                            deliveryDateMoment = holidays.find(h => h.name === "tết nguyên đán").date.clone().subtract(1, "day");
-                            priority = 2;
-                            break;
-                        case "noel":
-                            deliveryDateMoment = holidays.find(h => h.name === "noel").date.clone();
-                            break;
-                        case "trước trung thu":
-                            deliveryDateMoment = holidays.find(h => h.name === "trăng rằm trung thu").date.clone().subtract(1, "day");
-                            priority = 2;
-                            break;
-                        case "trước giỗ tổ":
-                            deliveryDateMoment = holidays.find(h => h.name === "giỗ tổ hùng vương").date.clone().subtract(1, "day");
-                            priority = 2;
-                            break;
-                        case "ngày giải phóng":
-                            deliveryDateMoment = holidays.find(h => h.name === "ngày giải phóng").date.clone();
-                            break;
-                        case "quốc tế lao động":
-                            deliveryDateMoment = holidays.find(h => h.name === "quốc tế lao động").date.clone();
-                            break;
-                        case "quốc khánh":
-                            deliveryDateMoment = holidays.find(h => h.name === "quốc khánh").date.clone();
-                            break;
-                        case "thứ hai":
-                        case "thứ hai tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 1) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ ba":
-                        case "thứ ba tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 2) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ tư":
-                        case "thứ tư tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 3) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ năm":
-                        case "thứ năm tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 4) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ sáu":
-                        case "thứ sáu tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 5) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ bảy":
-                        case "thứ bảy tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 6) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "chủ nhật":
-                        case "chủ nhật tuần này":
-                            deliveryDateMoment = now.clone();
-                            while (deliveryDateMoment.day() !== 0) deliveryDateMoment.add(1, "day");
-                            if (deliveryDateMoment.isBefore(now)) deliveryDateMoment.add(7, "days");
-                            break;
-                        case "thứ hai tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 1) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "thứ ba tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 2) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "thứ tư tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 3) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "thứ năm tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 4) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "thứ sáu tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 5) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "thứ bảy tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 6) deliveryDateMoment.add(1, "day");
-                            break;
-                        case "chủ nhật tuần sau":
-                            deliveryDateMoment = now.clone().add(1, "week");
-                            while (deliveryDateMoment.day() !== 0) deliveryDateMoment.add(1, "day");
-                            break;
-                        default:
-                            const daysMatch = deliveryDate.match(/(\d+)\s*ngày nữa/);
-                            if (daysMatch) {
-                                const days = parseInt(daysMatch[1], 10);
-                                deliveryDateMoment = now.clone().add(days, "days");
-                            } else {
-                                hasKeyword = false;
-                                console.warn(`Đơn ${order.id_order}: deliveryDate không khớp với từ khóa thời gian (${deliveryDate})`);
-                            }
-                            break;
-                    }
-                }
-
-                // Kiểm tra ngày lễ và Chủ nhật
-                const isHoliday = holidays.some(h => deliveryDateMoment.isSame(h.date, "day"));
-                const isSunday = deliveryDateMoment.day() === 0;
-                if (hasKeyword && (isHoliday || isSunday)) {
-                    do {
-                        deliveryDateMoment.add(1, "day");
-                    } while (deliveryDateMoment.day() === 0 || holidays.some(h => deliveryDateMoment.isSame(h.date, "day")));
-                }
-
-                // Xử lý các trường hợp đặc biệt
-                if (normalizedNote.includes("khi khách ở nhà") || normalizedNote.includes("sau khi liên hệ")) {
-                    hasKeyword = true;
-                    priority = 1;
-                    deliveryDeadline = null;
-                } else if (normalizedNote.includes("gấp") || normalizedNote.includes("gấp hôm nay")) {
-                    hasKeyword = true;
-                    priority = 2;
-                    deliveryDeadline = deliveryTime.clone().add(travelTime + 15, "minutes");
-                } else if (normalizedNote.includes("sớm")) {
-                    hasKeyword = true;
-                    priority = 1;
-                    const now = moment().tz("Asia/Ho_Chi_Minh");
-                    deliveryDateMoment = now.clone();
-                    deliveryDeadline = now.hour() < 14
-                        ? now.clone().add(3, "hours")
-                        : deliveryDateMoment.clone().startOf("day").add(17, "hours").add(45, "minutes");
-                }
-
-                // Xử lý thời gian giao hàng từ ghi chú (nếu chưa có deadline)
-                if (hasKeyword && timeHint && !deliveryDeadline) {
-                    const timeRangeMatch = normalizedNote.match(/(\d{1,2})\s*đến\s*(\d{1,2})\s*h/i);
-                    if (timeRangeMatch) {
-                        let startHour = parseInt(timeRangeMatch[1], 10);
-                        let endHour = parseInt(timeRangeMatch[2], 10);
-                        const minute = 0;
-                        if (normalizedNote.includes("sáng") && endHour < 12) {
-                            // Giữ nguyên
-                        } else if (normalizedNote.includes("chiều") && startHour < 12) {
-                            startHour += 12;
-                            endHour += 12;
-                        } else if (normalizedNote.includes("tối") && startHour < 12) {
-                            startHour += 12;
-                            endHour += 12;
-                        }
-                        deliveryDeadline = deliveryDateMoment
-                            .clone()
-                            .startOf("day")
-                            .add(endHour, "hours")
-                            .add(minute, "minutes");
-                    } else {
-                        switch (timeHint.toLowerCase()) {
-                            case "sáng":
-                                deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(10, "hours");
-                                break;
-                            case "chiều":
-                                deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(15, "hours");
-                                break;
-                            case "tối":
-                                deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(17, "hours").add(45, "minutes");
-                                break;
-                            default:
-                                const timeMatch = timeHint.match(/(\d{1,2})(?::(\d{2}))?(h|am|pm)?/i);
-                                if (timeMatch) {
-                                    let hour = parseInt(timeMatch[1], 10);
-                                    const minute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
-                                    const period = timeMatch[3] ? timeMatch[3].toLowerCase() : "h";
-                                    if (period === "pm" && hour < 12) hour += 12;
-                                    else if (period === "am" && hour === 12) hour = 0;
-                                    else if (normalizedNote.includes("tối") && hour < 12) hour += 12;
-                                    else if (normalizedNote.includes("chiều") && hour < 12) hour += 12;
-                                    deliveryDeadline = deliveryDateMoment
-                                        .clone()
-                                        .startOf("day")
-                                        .add(hour, "hours")
-                                        .add(minute, "minutes");
-                                } else {
-                                    console.warn(`Đơn ${order.id_order}: timeHint không hợp lệ (${timeHint}), bỏ qua`);
-                                    hasKeyword = false;
-                                }
-                                break;
-                        }
-                    }
-                }
-
-                // Điều chỉnh delivery_deadline theo thời gian làm việc
-                if (hasKeyword && deliveryDeadline) {
-                    const isSaturday = deliveryDeadline.day() === 6;
-                    const startOfDay = deliveryDeadline.clone().startOf("day");
-                    const workStart = startOfDay.clone().add(8, "hours");
-                    const workEnd = isSaturday
-                        ? startOfDay.clone().add(16, "hours").add(30, "minutes")
-                        : startOfDay.clone().add(17, "hours").add(45, "minutes");
-                    const lunchStart = startOfDay.clone().add(12, "hours");
-                    const lunchEnd = startOfDay.clone().add(13, "hours").add(30, "minutes");
-
-                    const isHoliday = holidays.some(h => deliveryDeadline.isSame(h.date, "day"));
-                    const isSunday = deliveryDeadline.day() === 0;
-                    if (isHoliday || isSunday) {
-                        do {
-                            deliveryDeadline.add(1, "day");
-                            deliveryDeadline = deliveryDeadline.clone().startOf("day").add(8, "hours");
-                        } while (deliveryDeadline.day() === 0 || holidays.some(h => deliveryDeadline.isSame(h.date, "day")));
-                        deliveryDateMoment = deliveryDeadline.clone().startOf("day");
-                    }
-
-                    if (deliveryDeadline.isSameOrAfter(lunchStart) && deliveryDeadline.isBefore(lunchEnd)) {
-                        deliveryDeadline = lunchEnd.clone();
-                    }
-
-                    if (deliveryDeadline.isBefore(workStart)) {
-                        deliveryDeadline = workStart.clone();
-                    } else if (deliveryDeadline.isAfter(workEnd)) {
-                        do {
-                            deliveryDeadline.add(1, "day");
-                            deliveryDeadline = deliveryDeadline.clone().startOf("day").add(8, "hours");
-                        } while (deliveryDeadline.day() === 0 || holidays.some(h => deliveryDeadline.isSame(h.date, "day")));
-                        deliveryDateMoment = deliveryDeadline.clone().startOf("day");
-                    }
-
-                    if (deliveryDeadline.isBefore(deliveryTime)) {
-                        deliveryDeadline = deliveryTime.clone().add(travelTime + 15, "minutes");
-                    }
-
-                    const timeToDeadline = deliveryDeadline.diff(moment(), "minutes");
-                    if (timeToDeadline < 0) {
-                        priority = 2;
-                    } else if (timeToDeadline <= 60) {
-                        priority = 2;
-                    } else if (timeToDeadline <= 90) {
-                        priority = 1;
-                    } else if (priority === 0) {
-                        priority = 1;
-                    }
-                }
-
-                // Nếu không có từ khóa, trả về null và priority = 0
-                if (!hasKeyword) {
-                    console.log(`Đơn ${order.id_order}: Không tìm thấy từ khóa thời gian, gán delivery_deadline=null, priority=0`);
-                    return { id_order: order.id_order, priority: 0, delivery_deadline: null };
-                }
-
-                // Đảm bảo delivery_deadline là null hoặc chuỗi DATETIME hợp lệ
-                if (deliveryDeadline && !moment(deliveryDeadline, "YYYY-MM-DD HH:mm:ss", true).isValid()) {
-                    console.warn(`Đơn ${order.id_order}: delivery_deadline không hợp lệ (${deliveryDeadline}), gán null`);
-                    deliveryDeadline = null;
-                }
-
-                const result = {
-                    id_order: order.id_order,
-                    priority,
-                    delivery_deadline: deliveryDeadline ? deliveryDeadline.format("YYYY-MM-DD HH:mm:ss") : null,
-                };
-
-                // Log kết quả cuối cùng của parseDeliveryNote
-                console.log(`Đơn ${order.id_order}: Kết quả parseDeliveryNote: priority=${result.priority}, delivery_deadline=${result.delivery_deadline}`);
-
-                return result;
-            } catch (error) {
-                console.error(`Lỗi phân tích đơn ${order.id_order}: ${error.message}`);
-                return { id_order: order.id_order, priority: 0, delivery_deadline: null };
+        // Sử dụng deliveryDate từ parseDeliveryNoteForAddress
+        if (deliveryDate) {
+          let deliveryDateMoment;
+          if (moment(deliveryDate, "DD/MM/YYYY", true).isValid()) {
+            deliveryDateMoment = moment(deliveryDate, "DD/MM/YYYY").tz("Asia/Ho_Chi_Minh");
+          } else {
+            const now = moment().tz("Asia/Ho_Chi_Minh");
+            switch (deliveryDate.toLowerCase()) {
+              case "hôm nay":
+                deliveryDateMoment = deliveryTime.clone();
+                break;
+              case "ngày mai":
+                deliveryDateMoment = deliveryTime.clone().add(1, "day");
+                break;
+              case "ngày mốt":
+                deliveryDateMoment = deliveryTime.clone().add(2, "days");
+                break;
+              case "ngày kia":
+                deliveryDateMoment = deliveryTime.clone().add(3, "days");
+                break;
+              case "thứ hai tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(1, "day");
+                break;
+              case "thứ ba tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(2, "day");
+                break;
+              case "thứ tư tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(3, "day");
+                break;
+              case "thứ năm tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(4, "day");
+                break;
+              case "thứ sáu tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(5, "day");
+                break;
+              case "thứ bảy tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(6, "day");
+                break;
+              case "chủ nhật tuần tới":
+                deliveryDateMoment = now.clone().add(1, "week").startOf("week").add(7, "day");
+                break;
+              default:
+                console.warn(
+                  `Đơn ${order.id_order}: deliveryDate không khớp với từ khóa thời gian (${deliveryDate})`
+                );
+                hasKeyword = false;
+                break;
             }
+          }
+
+          if (hasKeyword) {
+            // Kiểm tra ngày lễ và Chủ nhật
+            const isHoliday = holidays.some((h) => deliveryDateMoment.isSame(h.date, "day"));
+            const isSunday = deliveryDateMoment.day() === 0;
+            if (isHoliday || isSunday) {
+              do {
+                deliveryDateMoment.add(1, "day");
+              } while (
+                deliveryDateMoment.day() === 0 ||
+                holidays.some((h) => deliveryDateMoment.isSame(h.date, "day"))
+              );
+            }
+
+            // Kiểm tra nếu ngày giao là hôm sau hoặc xa hơn so với date_delivery
+            const isNextDayOrLater = !deliveryDateMoment.isSame(deliveryTime, 'day');
+
+            // Xử lý timeHint
+            if (note.toLowerCase().includes("khi khách ở nhà") || note.toLowerCase().includes("sau khi liên hệ")) {
+              priority = 1;
+              deliveryDeadline = null;
+            } else if (isNextDayOrLater) {
+              // Nếu giao qua ngày hôm sau, gán delivery_deadline là 8h sáng + travel_time + 15 phút
+              deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(8, "hours").add(travelTime + 15, "minutes");
+            } else if (timeHint) {
+              const timeRangeMatch = timeHint.match(/(\d{1,2})\s*đến\s*(\d{1,2})\s*h/i);
+              if (timeRangeMatch) {
+                let startHour = parseInt(timeRangeMatch[1], 10);
+                let endHour = parseInt(timeRangeMatch[2], 10);
+                const minute = 0;
+                if (note.toLowerCase().includes("sáng") && endHour < 12) {
+                } else if (note.toLowerCase().includes("chiều") && startHour < 12) {
+                  startHour += 12;
+                  endHour += 12;
+                } else if (note.toLowerCase().includes("tối") && startHour < 12) {
+                  startHour += 12;
+                  endHour += 12;
+                }
+                deliveryDeadline = deliveryDateMoment
+                  .clone()
+                  .startOf("day")
+                  .add(endHour, "hours")
+                  .add(minute, "minutes");
+              } else {
+                const timeMatch = timeHint.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+                if (timeMatch) {
+                  const hour = parseInt(timeMatch[1], 10);
+                  const minute = parseInt(timeMatch[2], 10);
+                  const second = parseInt(timeMatch[3], 10);
+                  deliveryDeadline = deliveryDateMoment
+                    .clone()
+                    .startOf("day")
+                    .add(hour, "hours")
+                    .add(minute, "minutes")
+                    .add(second, "seconds");
+                } else {
+                  switch (timeHint.toLowerCase()) {
+                    case "sáng":
+                      deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(10, "hours");
+                      break;
+                    case "trưa":
+                      deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(12, "hours");
+                      break;
+                    case "chiều":
+                      deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(15, "hours");
+                      break;
+                    case "tối":
+                      deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(17, "hours").add(45, "minutes");
+                      break;
+                    default:
+                      const timeMatch = timeHint.match(/(\d{1,2})(?::(\d{2}))?(h|am|pm)?/i);
+                      if (timeMatch) {
+                        let hour = parseInt(timeMatch[1], 10);
+                        const minute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+                        const period = timeMatch[3] ? timeMatch[3].toLowerCase() : "h";
+                        if (period === "pm" && hour < 12) hour += 12;
+                        else if (period === "am" && hour === 12) hour = 0;
+                        else if (note.toLowerCase().includes("tối") && hour < 12) hour += 12;
+                        else if (note.toLowerCase().includes("chiều") && hour < 12) hour += 12;
+                        deliveryDeadline = deliveryDateMoment
+                          .clone()
+                          .startOf("day")
+                          .add(hour, "hours")
+                          .add(minute, "minutes");
+                      } else {
+                        console.warn(
+                          `Đơn ${order.id_order}: timeHint không hợp lệ (${timeHint}), bỏ qua`
+                        );
+                        hasKeyword = false;
+                      }
+                      break;
+                  }
+                }
+              }
+            } else {
+              // Không có timeHint, mặc định 8h sáng + travel_time + 15 phút
+              deliveryDeadline = deliveryDateMoment.clone().startOf("day").add(8, "hours").add(travelTime + 15, "minutes");
+            }
+
+            // Kiểm tra thời gian làm việc
+            if (deliveryDeadline) {
+              const isSaturday = deliveryDeadline.day() === 6;
+              const startOfDay = deliveryDeadline.clone().startOf("day");
+              const workStart = startOfDay.clone().add(8, "hours");
+              const workEnd = isSaturday
+                ? startOfDay.clone().add(16, "hours").add(30, "minutes")
+                : startOfDay.clone().add(17, "hours").add(45, "minutes");
+              const lunchStart = startOfDay.clone().add(12, "hours");
+              const lunchEnd = startOfDay.clone().add(13, "hours").add(30, "minutes");
+
+              const isHoliday = holidays.some((h) => deliveryDeadline.isSame(h.date, "day"));
+              const isSunday = deliveryDeadline.day() === 0;
+              if (isHoliday || isSunday) {
+                do {
+                  deliveryDeadline.add(1, "day");
+                  deliveryDeadline = deliveryDeadline.clone().startOf("day").add(8, "hours").add(travelTime + 15, "minutes");
+                } while (
+                  deliveryDeadline.day() === 0 ||
+                  holidays.some((h) => deliveryDeadline.isSame(h.date, "day"))
+                );
+                deliveryDateMoment = deliveryDeadline.clone().startOf("day");
+              }
+
+              if (deliveryDeadline.isSameOrAfter(lunchStart) && deliveryDeadline.isBefore(lunchEnd)) {
+                deliveryDeadline = lunchEnd.clone();
+              }
+
+              if (deliveryDeadline.isBefore(workStart)) {
+                deliveryDeadline = workStart.clone();
+              } else if (deliveryDeadline.isAfter(workEnd)) {
+                do {
+                  deliveryDeadline.add(1, "day");
+                  deliveryDeadline = deliveryDeadline.clone().startOf("day").add(8, "hours").add(travelTime + 15, "minutes");
+                } while (
+                  deliveryDeadline.day() === 0 ||
+                  holidays.some((h) => deliveryDeadline.isSame(h.date, "day"))
+                );
+                deliveryDateMoment = deliveryDeadline.clone().startOf("day");
+              }
+
+              // Đảm bảo delivery_deadline không trước date_delivery
+              if (deliveryDeadline.isBefore(deliveryTime)) {
+                deliveryDeadline = deliveryTime.clone().add(travelTime + 15, "minutes");
+                priority = 2; // Ưu tiên cao nếu gần thời gian xuất kho
+              }
+            }
+          }
+        }
+
+        const result = {
+          id_order: order.id_order,
+          priority,
+          delivery_deadline: deliveryDeadline ? deliveryDeadline.format("YYYY-MM-DD HH:mm:ss") : null,
+          address: newAddress,
         };
 
-        // Phân tích ghi chú theo batch
-        const batchSize = 50;
-        for (let i = 0; i < orders.length; i += batchSize) {
-            const batch = orders.slice(i, i + batchSize);
-            const batchPromises = batch.map((order, index) =>
-                limit(async () => {
-                    console.log(`Xử lý đơn ${order.id_order} (hàng ${i + index + 1}): delivery_note="${order.delivery_note}", date_delivery="${order.date_delivery}", travel_time=${order.travel_time}`);
-                    const result = parseDeliveryNote(order.delivery_note, order.travel_time || 15, order);
-                    if (!result) {
-                        console.warn(`Đơn ${order.id_order}: Không trả về kết quả hợp lệ`);
-                        return;
-                    }
-                    console.log(
-                        `[analyzeDeliveryNote] Đã phân tích đơn ${order.id_order}: delivery_note="${order.delivery_note}", priority=${result.priority}, delivery_deadline=${result.delivery_deadline}`
-                    );
-                    if (result.priority > 0 || result.delivery_deadline) {
-                        // Kiểm tra giá trị delivery_deadline trước khi đẩy vào priorityUpdates
-                        if (result.delivery_deadline === '0' || (result.delivery_deadline && !moment(result.delivery_deadline, "YYYY-MM-DD HH:mm:ss", true).isValid())) {
-                            console.warn(`Đơn ${order.id_order}: delivery_deadline không hợp lệ (${result.delivery_deadline}), gán null`);
-                            result.delivery_deadline = null;
-                        }
-                        priorityUpdates.push([
-                            result.priority,
-                            result.delivery_deadline,
-                            result.id_order,
-                        ]);
-                    }
-                })
-            );
-            await Promise.all(batchPromises);
-        }
+        console.log(
+          `Đơn ${order.id_order}: Kết quả parseDeliveryNote: priority=${result.priority}, delivery_deadline=${result.delivery_deadline}, address=${result.address}`
+        );
 
-        // Cập nhật analyzed, priority, và delivery_deadline trong một truy vấn
-        if (analyzedOrders.length > 0) {
-            console.log(`[analyzeDeliveryNote] Số đơn hàng đã phân tích: ${analyzedOrders.length}`);
-            
-            // Tạo truy vấn UPDATE với CASE
-            const idOrders = analyzedOrders.map(([id_order]) => id_order);
-            let updateQuery = `
-                UPDATE orders
-                SET 
-                    analyzed = 1,
-                    priority = CASE id_order
-            `;
-            let deliveryDeadlineCase = `
-                    delivery_deadline = CASE id_order
-            `;
-            const queryParams = [];
+        return result;
+      } catch (error) {
+        console.error(`Lỗi phân tích đơn ${order.id_order}: ${error.message}`);
+        return {
+          id_order: order.id_order,
+          priority: 0,
+          delivery_deadline: null,
+          address: null,
+        };
+      }
+    };
 
-            analyzedOrders.forEach(([id_order]) => {
-                const update = priorityUpdates.find(([_, __, id]) => id === id_order) || [0, null, id_order];
-                // Kiểm tra lại update[1] (delivery_deadline) trước khi thêm vào query
-                if (update[1] === '0' || (update[1] && !moment(update[1], "YYYY-MM-DD HH:mm:ss", true).isValid())) {
-                    console.warn(`Đơn ${id_order}: delivery_deadline không hợp lệ trong priorityUpdates (${update[1]}), gán null`);
-                    update[1] = null;
-                }
-                updateQuery += ` WHEN ? THEN ?`;
-                deliveryDeadlineCase += ` WHEN ? THEN ?`;
-                queryParams.push(id_order, update[0], id_order, update[1]);
+    const batchSize = 50;
+    for (let i = 0; i < orders.length; i += batchSize) {
+      const batch = orders.slice(i, i + batchSize);
+      const batchPromises = batch.map((order, index) =>
+        limit(async () => {
+          console.log(
+            `Xử lý đơn ${order.id_order} (hàng ${i + index + 1}): delivery_note="${order.delivery_note}", date_delivery="${order.date_delivery}"`
+          );
+          const result = parseDeliveryNote(order.delivery_note, order.travel_time || 15, order);
+          if (!result) {
+            console.warn(`Đơn ${order.id_order}: Không trả về kết quả hợp lệ`);
+            return;
+          }
+          console.log(
+            `[analyzeDeliveryNote] Đã phân tích đơn ${order.id_order}: delivery_note="${order.delivery_note}", priority=${result.priority}, delivery_deadline=${result.delivery_deadline}, address=${result.address}`
+          );
+          if (result.priority > 0 || result.delivery_deadline) {
+            priorityUpdates.push({
+              priority: result.priority,
+              delivery_deadline: result.delivery_deadline,
+              id_order: result.id_order,
             });
-
-            updateQuery += `
-                    ELSE priority END,
-            `;
-            deliveryDeadlineCase += `
-                    ELSE delivery_deadline END
-            `;
-
-            updateQuery += deliveryDeadlineCase + `
-                WHERE id_order IN (${idOrders.map(() => '?').join(',')})
-            `;
-            queryParams.push(...idOrders);
-
-            const [updateResult] = await connection.query(updateQuery, queryParams);
-            console.log(`[analyzeDeliveryNote] Số dòng cập nhật: ${updateResult.affectedRows}`);
-
-            // Thống kê số đơn không có từ khóa
-            const noKeywordCount = analyzedOrders.length - priorityUpdates.length;
-            console.log(`[analyzeDeliveryNote] Số đơn không có từ khóa: ${noKeywordCount}`);
-        } else {
-            console.log("[analyzeDeliveryNote] Không có đơn hàng nào được phân tích");
-        }
-
-        await connection.end();
-        console.log(`[analyzeDeliveryNote] Thực thi trong ${Date.now() - startTime}ms`);
-    } catch (error) {
-        console.error("[analyzeDeliveryNote] Lỗi:", error.message, error.stack);
-        throw error;
+          }
+          if (result.address) {
+            addressUpdates.push({
+              id_order: result.id_order,
+              address: result.address,
+            });
+          }
+        })
+      );
+      await Promise.all(batchPromises);
     }
+
+    console.log("[analyzeDeliveryNote] Các đơn hàng sẽ được cập nhật:");
+    console.log("1. Đơn có thay đổi (priority hoặc delivery_deadline):");
+    priorityUpdates.forEach(({ priority, delivery_deadline, id_order }, index) => {
+      console.log(
+        `Row ${index + 1}: { id_order: "${id_order}", priority: ${priority}, delivery_deadline: ${
+          delivery_deadline === null ? "null" : `"${delivery_deadline}"`
+        }, analyzed: 1 }`
+      );
+    });
+
+    console.log("2. Đơn có địa chỉ mới:");
+    addressUpdates.forEach(({ id_order, address }, index) => {
+      console.log(
+        `Row ${index + 1}: { id_order: "${id_order}", address: "${address}" }`
+      );
+    });
+
+    console.log("3. Đơn không có thay đổi (chỉ cập nhật analyzed):");
+    const noChangeOrders = analyzedOrders.filter(
+      ([id_order]) => !priorityUpdates.some((update) => update.id_order === id_order)
+    );
+    noChangeOrders.forEach(([id_order], index) => {
+      console.log(
+        `Row ${index + 1}: { id_order: "${id_order}", priority: 0, delivery_deadline: null, analyzed: 1 }`
+      );
+    });
+
+    if (analyzedOrders.length > 0) {
+      console.log(
+        `[analyzeDeliveryNote] Số đơn hàng đã phân tích: ${analyzedOrders.length}`
+      );
+
+      if (priorityUpdates.length > 0) {
+        let updatedRows = 0;
+        for (const { priority, delivery_deadline, id_order } of priorityUpdates) {
+          let finalDeadline = delivery_deadline;
+          if (
+            finalDeadline &&
+            !moment(finalDeadline, "YYYY-MM-DD HH:mm:ss", true).isValid()
+          ) {
+            console.warn(
+              `Đơn ${id_order}: delivery_deadline không hợp lệ trước UPDATE (${finalDeadline}), gán null`
+            );
+            finalDeadline = null;
+          }
+
+          const updateQuery = `
+            UPDATE orders
+            SET 
+              analyzed = 1,
+              priority = ?,
+              delivery_deadline = ?
+            WHERE id_order = ?
+          `;
+          const queryParams = [priority, finalDeadline, id_order];
+
+          try {
+            console.log(
+              `[analyzeDeliveryNote] Thực thi UPDATE cho đơn ${id_order}: priority=${priority}, delivery_deadline=${
+                finalDeadline === null ? "null" : `"${finalDeadline}"`
+              }`
+            );
+            const [updateResult] = await connection.query(updateQuery, queryParams);
+            updatedRows += updateResult.affectedRows;
+          } catch (error) {
+            console.error(
+              `[analyzeDeliveryNote] Lỗi khi cập nhật đơn ${id_order}: ${error.message}`
+            );
+          }
+        }
+        console.log(
+          `[analyzeDeliveryNote] Số dòng cập nhật với priority/delivery_deadline: ${updatedRows}`
+        );
+      }
+
+      if (addressUpdates.length > 0) {
+        let updatedAddressRows = 0;
+        for (const { id_order, address } of addressUpdates) {
+          const cleanedAddress = cleanAddress(address);
+          if (!isValidAddress(cleanedAddress)) {
+            console.warn(
+              `Đơn ${id_order}: Địa chỉ giao hàng không hợp lệ (${cleanedAddress}), bỏ qua`
+            );
+            continue;
+          }
+
+          const openAIResult = await callOpenAI(id_order, cleanedAddress);
+          const updateQuery = `
+            INSERT INTO orders_address (id_order, address, district, ward, source)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+              address = IF(VALUES(address) != '', VALUES(address), address),
+              district = IF(VALUES(district) IS NOT NULL, VALUES(district), district),
+              ward = IF(VALUES(ward) IS NOT NULL, VALUES(ward), ward),
+              source = IF(VALUES(source) IS NOT NULL, VALUES(source), source)
+          `;
+          const queryParams = [
+            id_order,
+            openAIResult.DcGiaohang || cleanedAddress,
+            openAIResult.District || null,
+            openAIResult.Ward || null,
+            openAIResult.DcGiaohang ? "OpenAI" : "Original",
+          ];
+
+          try {
+            console.log(
+              `[analyzeDeliveryNote] Cập nhật địa chỉ cho đơn ${id_order}: address="${openAIResult.DcGiaohang || cleanedAddress}"`
+            );
+            const [updateResult] = await connection.query(updateQuery, queryParams);
+            updatedAddressRows += updateResult.affectedRows;
+          } catch (error) {
+            console.error(
+              `[analyzeDeliveryNote] Lỗi khi cập nhật địa chỉ đơn ${id_order}: ${error.message}`
+            );
+          }
+        }
+        console.log(
+          `[analyzeDeliveryNote] Số dòng cập nhật địa chỉ: ${updatedAddressRows}`
+        );
+      }
+
+      if (noChangeOrders.length > 0) {
+        const noChangeQuery = `
+          UPDATE orders
+          SET analyzed = 1
+          WHERE id_order IN (${noChangeOrders.map(() => "?").join(",")})
+        `;
+        const noChangeParams = noChangeOrders.map(([id_order]) => id_order);
+        const [noChangeResult] = await connection.query(noChangeQuery, noChangeParams);
+        console.log(
+          `[analyzeDeliveryNote] Số dòng cập nhật chỉ analyzed: ${noChangeResult.affectedRows}`
+        );
+      }
+
+      console.log(
+        `[analyzeDeliveryNote] Số đơn không có từ khóa: ${noChangeOrders.length}`
+      );
+
+      await connection.commit();
+      console.log("[analyzeDeliveryNote] Transaction đã được commit");
+    } else {
+      console.log("[analyzeDeliveryNote] Không có đơn hàng nào được phân tích");
+      await connection.commit();
+    }
+
+    await connection.end();
+    console.log(
+      `[analyzeDeliveryNote] Thực thi trong ${Date.now() - startTime}ms`
+    );
+  } catch (error) {
+    console.error("[analyzeDeliveryNote] Lỗi:", error.message, error.stack);
+    if (connection) {
+      try {
+        await connection.rollback();
+        console.log(
+          "[analyzeDeliveryNote] Transaction đã được rollback do lỗi"
+        );
+      } catch (rollbackError) {
+        console.error(
+          "[analyzeDeliveryNote] Lỗi khi rollback:",
+          rollbackError.message
+        );
+      }
+      await connection.end();
+    }
+    throw error;
+  }
 }
 
 // ================================================================== CHƯƠNG TRÌNH CHÍNH ==================================================
