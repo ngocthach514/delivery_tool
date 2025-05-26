@@ -1134,22 +1134,28 @@ async function geocodeAddress(address) {
   const startTime = Date.now();
   const run = async () => {
     const response = await axios.get(
-      `${process.env.TOMTOM_GEOCODE_API_URL}/${encodeURIComponent(
-        address
-      )}.json`,
+      `${process.env.TOMTOM_GEOCODE_API_URL}/${encodeURIComponent(address)}.json`,
       {
         params: {
           key: TOMTOM_API_KEY,
           countrySet: "VN",
-          limit: 1,
+          language: "vi-VN",
+          limit: 5, // Lấy tối đa 5 kết quả
         },
       }
     );
 
     if (response.data.results && response.data.results.length > 0) {
-      const { lat, lon } = response.data.results[0].position;
+      // Chọn kết quả có độ chính xác cao nhất trong Việt Nam
+      const result = response.data.results.find(r => {
+        const { lat, lon } = r.position;
+        return lat >= 8 && lat <= 23 && lon >= 102 && lon <= 109; // Việt Nam
+      }) || response.data.results[0];
+      const { lat, lon } = result.position;
+      console.log(`[geocodeAddress] Địa chỉ: ${address}, Tọa độ: (${lat}, ${lon})`);
       return { lat, lon };
     }
+    console.warn(`[geocodeAddress] Không tìm thấy tọa độ cho: ${address}`);
     return null;
   };
 
@@ -1158,55 +1164,30 @@ async function geocodeAddress(address) {
     console.log(`geocodeAddress thực thi trong ${Date.now() - startTime}ms`);
     return result;
   } catch (error) {
-    console.error(
-      `Lỗi khi gọi TomTom Geocoding API cho ${address}:`,
-      error.message
-    );
+    console.error(`Lỗi khi gọi TomTom Geocoding API cho ${address}:`, error.message);
     return null;
   }
 }
 
-// TÍNH TOÁN ĐƯỜNG ĐI
-async function calculateRoute(
-  destinationAddress,
-  originalAddress,
-  district,
-  ward
-) {
+// TÍNH TOÁN TUYẾN ĐƯỜNG
+async function calculateRoute(destinationAddress, originalAddress, district, ward) {
   const startTime = Date.now();
-
-  // Kiểm tra giá trị của WAREHOUSE_ADDRESS
-  if (
-    !WAREHOUSE_ADDRESS ||
-    typeof WAREHOUSE_ADDRESS !== "string" ||
-    WAREHOUSE_ADDRESS.trim() === ""
-  ) {
-    throw new Error(
-      "WAREHOUSE_ADDRESS không được định nghĩa hoặc không hợp lệ trong biến môi trường."
-    );
+  if (!WAREHOUSE_ADDRESS || typeof WAREHOUSE_ADDRESS !== "string" || WAREHOUSE_ADDRESS.trim() === "") {
+    throw new Error("WAREHOUSE_ADDRESS không được định nghĩa hoặc không hợp lệ trong biến môi trường.");
   }
-
   const originAddress = WAREHOUSE_ADDRESS;
 
-  const cacheResult = await checkRouteCache(
-    destinationAddress,
-    originalAddress
-  );
-  if (cacheResult) {
-    console.log(
-      `[calculateRoute] Sử dụng cache cho địa chỉ: ${destinationAddress}`
-    );
+  const cacheResult = await checkRouteCache(destinationAddress, originalAddress);
+  if (cacheResult && cacheResult.distance > 0 && cacheResult.distance < 100) {
+    console.log(`[calculateRoute] Sử dụng cache cho địa chỉ: ${destinationAddress}`);
     return cacheResult;
   }
 
   const run = async () => {
     const origin = await geocodeAddress(originAddress);
     const destination = await geocodeAddress(destinationAddress);
-
     if (!origin || !destination) {
-      console.warn(
-        `[calculateRoute] Không thể lấy tọa độ cho địa chỉ: ${destinationAddress}`
-      );
+      console.warn(`[calculateRoute] Không thể lấy tọa độ cho địa chỉ: ${destinationAddress}`);
       return { distance: null, travel_time: null };
     }
 
@@ -1225,6 +1206,11 @@ async function calculateRoute(
       const route = response.data.routes[0];
       const distance = route.summary.lengthInMeters / 1000;
       const travel_time = Math.ceil(route.summary.travelTimeInSeconds / 60);
+      if (distance > 100 || distance === 0) {
+        console.warn(`[calculateRoute] Kết quả không hợp lệ cho ${destinationAddress}: ${distance} km, ${travel_time} phút`);
+        return { distance: null, travel_time: null };
+      }
+      console.log(`[calculateRoute] Kết quả: ${destinationAddress} -> ${distance} km, ${travel_time} phút`);
       return { distance, travel_time };
     }
     return { distance: null, travel_time: null };
@@ -1233,22 +1219,12 @@ async function calculateRoute(
   try {
     const result = await retry(run);
     if (result.distance !== null && result.travel_time !== null) {
-      await saveRouteToCache(
-        originalAddress,
-        destinationAddress,
-        district,
-        ward,
-        result.distance,
-        result.travel_time
-      );
+      await saveRouteToCache(originalAddress, destinationAddress, district, ward, result.distance, result.travel_time);
     }
     console.log(`[calculateRoute] Thực thi trong ${Date.now() - startTime}ms`);
     return result;
   } catch (error) {
-    console.error(
-      `[calculateRoute] Lỗi khi gọi TomTom Routing API đến ${destinationAddress}:`,
-      error.message
-    );
+    console.error(`[calculateRoute] Lỗi khi gọi TomTom Routing API đến ${destinationAddress}:`, error.message);
     return { distance: null, travel_time: null };
   }
 }

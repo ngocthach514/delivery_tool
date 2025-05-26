@@ -492,21 +492,12 @@
         container.innerHTML = "";
         container.style.display = "flex";
 
-        const backBtn = document.createElement("button");
-        backBtn.className = "back-btn";
-        backBtn.textContent = "Quay lại trang chính";
-        backBtn.onclick = () => {
-          window.location.href = "/index.html";
-        };
-
         const statsDiv = document.createElement("div");
         statsDiv.className = "stats";
         statsDiv.innerHTML = `
         <span class="pending-count">Tổng đơn chờ giao: <strong>${totalOrders}</strong></span>
         <span class="overdue-count">Tổng đơn quá 15 phút: <strong>${overdueCount}</strong></span>
       `;
-
-        container.appendChild(backBtn);
         container.appendChild(statsDiv);
       }
 
