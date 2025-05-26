@@ -229,6 +229,35 @@
         display: flex;
         align-items: center;
       }
+      .header-stats {
+        display: flex;
+        gap: 20px;
+        background-color: #ffffff;
+        padding: 10px 20px;
+        border-radius: 8px;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+        font-size: 15px;
+        font-weight: 600;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+      }
+      .header-stats:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      }
+      .header-stats .pending-count {
+        color: #2e7d32;
+      }
+      .header-stats .pending-count strong {
+        font-size: 16px;
+        color: #1b5e20;
+      }
+      .header-stats .overdue-count {
+        color: #d32f2f;
+      }
+      .header-stats .overdue-count strong {
+        font-size: 16px;
+        color: #b71c1c;
+      }
       .view-static-btn {
         padding: 8px 12px;
         background-color: #007bff;
@@ -248,6 +277,16 @@
     <div class="container">
       <div class="header-container">
         <h1>DANH SÁCH ĐƠN HÀNG</h1>
+        <div class="header-stats">
+          <span class="pending-count"
+            >Tổng đơn chờ giao:
+            <strong id="pending-orders-count">0</strong></span
+          >
+          <span class="overdue-count"
+            >Tổng đơn quá 15 phút:
+            <strong id="overdue-orders-count">0</strong></span
+          >
+        </div>
         <div class="header-right">
           <div class="notification-bell" id="notification-bell">
             <svg
@@ -337,7 +376,10 @@
       let apiUrl = "/grouped-orders";
       let currentPage = 1;
       let totalPages = 1;
+      let totalOrders = 0;
+      let overdueCount = 0;
       let allOrders = [];
+      let overdueOrders = [];
       let locationLoaded = false;
       let districtWardMap = {};
       let currentDateFilter = null;
@@ -345,6 +387,8 @@
         JSON.parse(localStorage.getItem("viewedNotifications")) || [];
       let countdownInterval = null;
       let isUserInteracting = false;
+      let refreshInterval = null;
+      let overdueOrderIds = new Set();
 
       function saveViewedNotifications() {
         localStorage.setItem(
@@ -387,6 +431,98 @@
         }, 1000);
       }
 
+      function startAutoRefresh() {
+        if (refreshInterval) {
+          clearInterval(refreshInterval);
+        }
+        refreshInterval = setInterval(() => {
+          if (!isUserInteracting) {
+            console.log("Tự động làm mới dữ liệu mỗi 5 phút...");
+            fetchOrders(currentPage);
+          }
+        }, 5 * 60 * 1000); // 5 phút
+      }
+
+      function updateStats(totalOrdersCount, overdueCount) {
+        $("#pending-orders-count").text(totalOrdersCount || 0);
+        $("#overdue-orders-count").text(overdueCount || 0);
+      }
+
+      function updateNotificationCount() {
+        const viewedCount = viewedNotifications.filter((id) =>
+          overdueOrderIds.has(id)
+        ).length;
+        const notificationCount = Math.max(0, overdueCount - viewedCount);
+        $("#notification-count").text(notificationCount);
+      }
+
+      async function fetchOverdueOrders(dateFilter = null) {
+        try {
+          const query = new URLSearchParams();
+          if (dateFilter) {
+            query.append("date", dateFilter);
+          }
+          const res = await fetch(`/orders/overdue-list?${query.toString()}`);
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(
+              `Không thể tải danh sách đơn quá hạn: ${
+                errorData.error || "Lỗi server không xác định"
+              }`
+            );
+          }
+          const data = await res.json();
+          overdueOrders = data.orders || [];
+          overdueOrderIds = new Set(overdueOrders.map((o) => o.id_order));
+          overdueCount = overdueOrders.length;
+          updateStats(totalOrders, overdueCount);
+          return overdueOrders;
+        } catch (err) {
+          console.error("Lỗi khi tải danh sách đơn quá hạn:", err.message);
+          $("#error")
+            .text("Lỗi khi tải danh sách đơn quá hạn: " + err.message)
+            .show();
+          return [];
+        }
+      }
+
+      function renderNotifications() {
+        const notificationList = $("#notification-list");
+        notificationList.empty();
+
+        if (overdueOrders.length > 0) {
+          overdueOrders.sort((a, b) => {
+            const aViewed = viewedNotifications.includes(a.id_order);
+            const bViewed = viewedNotifications.includes(b.id_order);
+            if (aViewed && !bViewed) return 1;
+            if (!aViewed && bViewed) return -1;
+            return moment(b.created_at).diff(moment(a.created_at));
+          });
+
+          overdueOrders.forEach((o) => {
+            const createdAt = moment(o.created_at)
+              .tz("Asia/Ho_Chi_Minh")
+              .format("DD/MM/YYYY HH:mm:ss");
+            const isViewed = viewedNotifications.includes(o.id_order);
+            notificationList.append(
+              `<div class="notification-item ${
+                isViewed ? "viewed" : "unviewed"
+              }" data-order-id="${o.id_order}">
+              <strong class="notification-item-text">CẢNH BÁO:</strong> Đơn hàng 
+              <strong class="notification-item-text">${
+                o.id_order
+              }</strong> quá 15 phút (Tạo: ${createdAt})
+            </div>`
+            );
+          });
+        } else {
+          notificationList.append(
+            `<div class="notification-item">Không có đơn hàng quá hạn.</div>`
+          );
+        }
+        updateNotificationCount();
+      }
+
       async function loadLocations() {
         try {
           const locationRes = await fetch("/locations");
@@ -406,30 +542,9 @@
         }
       }
 
-      async function fetchOverdueOrders() {
-        try {
-          const res = await fetch("/orders/overdue");
-          if (!res.ok) {
-            const errorData = await res.json().catch(() => ({}));
-            throw new Error(
-              `Không thể tải đơn hàng quá hạn: ${
-                errorData.error || "Lỗi server không xác định"
-              }`
-            );
-          }
-          const data = await res.json();
-          renderNotifications(data.orders || []);
-        } catch (err) {
-          console.error("Lỗi khi tải đơn hàng quá hạn:", err.message);
-          $("#error")
-            .text("Lỗi khi tải đơn hàng quá hạn: " + err.message)
-            .show();
-        }
-      }
-
       loadLocations();
       fetchOrders(currentPage);
-      fetchOverdueOrders();
+      startAutoRefresh();
 
       const socket = io();
       socket.on("connect", () => {
@@ -447,27 +562,6 @@
           startCountdownTimer(data.nextRunTime);
         }
       });
-      socket.on("statusUpdated", (data) => {
-        $("#notification-list").append(
-          `<div class="notification-item text-success">${data.message} (${data.updatedCount} đơn hàng)</div>`
-        );
-        updateNotificationCount();
-        $("#notification-dropdown").addClass("show");
-        setTimeout(() => {
-          $("#notification-list .text-success").remove();
-          updateNotificationCount();
-          if ($("#notification-list").children().length === 0) {
-            $("#notification-dropdown").removeClass("show");
-          }
-        }, 3000);
-        if (!isUserInteracting) {
-          fetchOrders(currentPage);
-        }
-        fetchOverdueOrders();
-      });
-      socket.on("overdueOrdersUpdated", (data) => {
-        fetchOverdueOrders();
-      });
       socket.on("ordersUpdated", (data) => {
         console.log("Nhận danh sách đơn hàng mới từ Socket.IO:", data);
         if (isUserInteracting) {
@@ -481,7 +575,11 @@
         if (data.data) {
           totalPages = data.data.totalPages || 1;
           currentPage = data.data.currentPage || 1;
+          totalOrders = data.totalOrders || 0;
+          overdueCount = data.overdueCount || 0;
           allOrders = data.data.orders || [];
+          overdueOrders = data.overdueOrders || [];
+          overdueOrderIds = new Set(overdueOrders.map((o) => o.id_order));
 
           const keyword = $("#searchInput").val().trim();
           const selectedDistricts = $("#districtSelect").val() || [];
@@ -499,7 +597,9 @@
           } else {
             console.log("Làm mới bảng với dữ liệu từ ordersUpdated");
             renderOrders(data.data.orders);
+            renderNotifications();
             renderPagination();
+            updateStats(totalOrders, overdueCount);
           }
         }
         if (data.nextRunTime) {
@@ -548,68 +648,14 @@
       });
 
       function markAllNotificationsRead() {
-        $("#notification-list .notification-item[data-order-id]").each(
-          function () {
-            const orderId = $(this).attr("data-order-id");
-            if (orderId && !viewedNotifications.includes(orderId)) {
-              viewedNotifications.push(orderId);
-            }
+        overdueOrders.forEach((order) => {
+          const orderId = order.id_order;
+          if (orderId && !viewedNotifications.includes(orderId)) {
+            viewedNotifications.push(orderId);
           }
-        );
+        });
         saveViewedNotifications();
-        fetchOverdueOrders();
-      }
-
-      function updateNotificationCount(overdueOrders) {
-        const count = overdueOrders
-          ? overdueOrders.filter(
-              (o) => !viewedNotifications.includes(o.id_order)
-            ).length
-          : $("#notification-list .notification-item[data-order-id]").filter(
-              function () {
-                return !viewedNotifications.includes(
-                  $(this).attr("data-order-id")
-                );
-              }
-            ).length;
-        $("#notification-count").text(count);
-      }
-
-      function renderNotifications(overdueOrders) {
-        const notificationList = $("#notification-list");
-        notificationList.empty();
-
-        if (overdueOrders.length > 0) {
-          overdueOrders.sort((a, b) => {
-            const aViewed = viewedNotifications.includes(a.id_order);
-            const bViewed = viewedNotifications.includes(b.id_order);
-            if (aViewed && !bViewed) return 1;
-            if (!aViewed && bViewed) return -1;
-            return 0;
-          });
-
-          overdueOrders.forEach((o) => {
-            const createdAt = moment(o.created_at)
-              .tz("Asia/Ho_Chi_Minh")
-              .format("DD/MM/YYYY HH:mm:ss");
-            const isViewed = viewedNotifications.includes(o.id_order);
-            notificationList.append(
-              `<div class="notification-item ${
-                isViewed ? "viewed" : "unviewed"
-              }" data-order-id="${o.id_order}">
-                <strong class="notification-item-text">CẢNH BÁO:</strong> Đơn hàng 
-                <strong class="notification-item-text">${
-                  o.id_order
-                }</strong> chưa được giao sau 15 phút (Tạo: ${createdAt})
-              </div>`
-            );
-          });
-        } else {
-          notificationList.append(
-            `<div class="notification-item">Không có đơn hàng quá hạn.</div>`
-          );
-        }
-        updateNotificationCount(overdueOrders);
+        renderNotifications();
       }
 
       async function findOrderById(orderId) {
@@ -634,11 +680,12 @@
           if (data.order) {
             renderOrders([data.order]);
             $("#pagination").hide();
+            updateStats(totalOrders, overdueCount);
 
             if (!viewedNotifications.includes(orderId)) {
               viewedNotifications.push(orderId);
               saveViewedNotifications();
-              fetchOverdueOrders();
+              renderNotifications();
             }
           } else {
             throw new Error("Không tìm thấy đơn hàng với mã này.");
@@ -680,9 +727,13 @@
 
           totalPages = data.totalPages || 1;
           currentPage = data.currentPage || 1;
+          totalOrders = data.totalOrders || 0;
           allOrders = data.orders || [];
           renderOrders(data.orders);
           renderPagination();
+          await fetchOverdueOrders(currentDateFilter);
+          renderNotifications();
+          updateStats(totalOrders, overdueCount);
         } catch (err) {
           console.error("Lỗi trong fetchOrders:", err.message);
           $("#error")
@@ -771,21 +822,21 @@
         const table = document.createElement("table");
         table.className = "table table-bordered";
         table.innerHTML = `
-          <thead>
-            <tr>
-              <th>MÃ ĐƠN</th>
-              <th>ĐỊA CHỈ GIAO HÀNG <br> ĐỊA CHỈ HÓA ĐƠN</th>
-              <th>KHOẢNG CÁCH QUY ĐỊNH <br>(km)</th>
-              <th>KHOẢNG CÁCH THỰC <br>(km)</th>
-              <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
-              <th>ĐỘ ƯU TIÊN</th>
-              <th>THỜI GIAN XUẤT KHO</th>
-              <th>GIAO THEO YÊU CẦU</th>
-              <th>GHI CHÚ KHÁCH HÀNG</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        `;
+        <thead>
+          <tr>
+            <th>MÃ ĐƠN</th>
+            <th>ĐỊA CHỈ GIAO HÀNG <br> ĐỊA CHỈ HÓA ĐƠN</th>
+            <th>KHOẢNG CÁCH QUY ĐỊNH <br>(km)</th>
+            <th>KHOẢNG CÁCH THỰC <br>(km)</th>
+            <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
+            <th>ĐỘ ƯU TIÊN</th>
+            <th>THỜI GIAN XUẤT KHO</th>
+            <th>GIAO THEO YÊU CẦU</th>
+            <th>GHI CHÚ KHÁCH HÀNG</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      `;
         const tbody = table.querySelector("tbody");
 
         orders.forEach((o) => {
@@ -806,13 +857,6 @@
           }
 
           const row = document.createElement("tr");
-          if (
-            o.status === 1 &&
-            timeToDeadline !== null &&
-            timeToDeadline <= 120
-          ) {
-            row.style.borderLeft = "6px solid red";
-          }
 
           const cells = [
             { text: o.id_order, class: priorityClass },
@@ -926,6 +970,9 @@
           if (data.orders && data.orders.length > 0) {
             renderOrders(data.orders);
             $("#pagination").hide();
+            updateStats(totalOrders, overdueCount);
+            await fetchOverdueOrders(currentDateFilter);
+            renderNotifications();
           } else {
             throw new Error("Không tìm thấy đơn hàng khớp với mã này.");
           }
@@ -946,7 +993,6 @@
             : null;
         currentPage = 1;
         applyFilters();
-        fetchOverdueOrders();
       }
 
       async function applyFilters() {
@@ -995,6 +1041,9 @@
           const data = await res.json();
           renderOrders(data.orders || []);
           $("#pagination").hide();
+          updateStats(totalOrders, overdueCount);
+          await fetchOverdueOrders(currentDateFilter);
+          renderNotifications();
         } catch (err) {
           console.error("Lỗi khi lọc đơn hàng nâng cao:", err.message);
           $("#error")
@@ -1006,7 +1055,7 @@
         }
       }
 
-      function resetFilters() {
+      async function resetFilters() {
         $("#searchInput").val("");
         $("#dateFilter").val("");
         $("#districtSelect").val(null).trigger("change");
@@ -1014,7 +1063,6 @@
         currentDateFilter = null;
         currentPage = 1;
         applyFilters();
-        fetchOverdueOrders();
       }
     </script>
   </body>

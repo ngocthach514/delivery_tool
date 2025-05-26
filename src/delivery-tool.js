@@ -436,40 +436,6 @@ async function handleEmptyAddress(
   };
 }
 
-// PHÂN TÍCH THỜI GIAN KHỞI HÀNH
-function parseDepartureTime(departureTime) {
-  if (!departureTime) return { start: null, end: null };
-
-  const timeRegex = /^(\d{1,2})[H:](\d{2})?(?:-(\d{1,2})[H:](\d{2})?)?$/i;
-  const match = departureTime.match(timeRegex);
-
-  if (!match) return { start: null, end: null };
-
-  const startHour = parseInt(match[1], 10);
-  const startMinute = match[2] ? parseInt(match[2], 10) : 0;
-  const endHour = match[3] ? parseInt(match[3], 10) : null;
-  const endMinute = match[4] ? parseInt(match[4], 10) : 0;
-
-  const start = moment()
-    .tz("Asia/Ho_Chi_Minh")
-    .startOf("day")
-    .add(startHour, "hours")
-    .add(startMinute, "minutes");
-
-  let end;
-  if (endHour !== null) {
-    end = moment()
-      .tz("Asia/Ho_Chi_Minh")
-      .startOf("day")
-      .add(endHour, "hours")
-      .add(endMinute, "minutes");
-  } else {
-    end = start.clone().add(30, "minutes");
-  }
-
-  return { start, end };
-}
-
 /**
  * Tìm nhà xe trong transport_companies
  * @param {string} address
@@ -577,9 +543,11 @@ async function findTransportCompany(
 /**
  * Phân tích ghi chú giao hàng để lấy thông tin nhà xe, địa chỉ, thời gian
  * @param {string} note
+ * @param {string} date_delivery - Ngày giao hàng định dạng DD/MM/YYYY HH:mm:ss
  * @returns {Object}
  */
 function parseDeliveryNoteForAddress(note, date_delivery) {
+  const moment = require("moment-timezone");
   if (!note) {
     return {
       transportName: "",
@@ -632,7 +600,7 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
   // Trích xuất địa chỉ giao hàng
   let address = "";
   const addressMatch = normalizedNote.match(
-    /(?:giao ở|giao tại|địa chỉ|giao đến|đc|giao hàng|GH)\s*[:\-]?\s*([^;]*(?:kho\s*\w+)?\s*\d+\s*[-\/]?\s*\d*\s*[^\d,;:]+(?:,\s*[^\d,;:]+)*)(?=\s*(?:sáng|trưa|chiều|tối|gấp|sớm|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
+    /(?:giao ở|giao tại|địa chỉ|giao đến|đc|giao hàng|GH|giao)\s*[:\-]?\s*([^;]*(?:kho\s*\w+)?\s*\d+\s*[-\/]?\s*\d*\s*[^\d,;:]+(?:,\s*[^\d,;:]+)*)(?=\s*(?:sáng|trưa|chiều|tối|gấp|sớm|hôm nay|ngày mai|ngày mốt|thứ [a-z]+|$))/i
   );
   if (addressMatch) {
     address = addressMatch[1].trim();
@@ -658,14 +626,16 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
   const urgentTimeMatch = normalizedNote.match(
     /gấp\s*(?:trước|truoc)\s*(\d{1,2}(?::\d{2})?(?:h|am|pm)?)(?:\s*thì\s*giao)?(?:\s*,?\s*(?:ko|không)\s*thì\s*(thứ\s*[2-7]|T2|T3|T4|T5|T6|T7|cn))?/i
   );
+  const now = moment().tz("Asia/Ho_Chi_Minh");
+  let deliveryTime = date_delivery ? moment(date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh") : now;
+  if (!deliveryTime.isValid()) {
+    console.warn(`[parseDeliveryNoteForAddress] date_delivery không hợp lệ: "${date_delivery}", sử dụng thời gian hiện tại`);
+    deliveryTime = now;
+  }
+
   if (urgentTimeMatch) {
     timeHint = urgentTimeMatch[1];
     priority = 2;
-    const deliveryTime = date_delivery ? moment(date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh") : moment().tz("Asia/Ho_Chi_Minh");
-    if (!deliveryTime.isValid()) {
-      console.warn(`[parseDeliveryNoteForAddress] date_delivery không hợp lệ: "${date_delivery}", sử dụng thời gian hiện tại`);
-      deliveryTime = moment().tz("Asia/Ho_Chi_Minh");
-    }
 
     const hourMatch = timeHint.match(/(\d{1,2})(?::(\d{2}))?(h|am|pm)?/i);
     let hour = parseInt(hourMatch[1], 10);
@@ -681,13 +651,11 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
     const estimatedDelivery = deliveryTime.clone().add(travelTime + 15, "minutes");
 
     if (estimatedDelivery.isBefore(deadlineTime)) {
-      // Thời gian giao dự kiến trước 12h, giữ ngày hiện tại và gán timeHint là thời gian giao dự kiến
       deliveryDate = deliveryTime.format("DD/MM/YYYY");
-      timeHint = estimatedDelivery.format("HH:mm:ss");
+      timeHint = estimatedDelivery.format("HH:mm");
     } else if (urgentTimeMatch[2]) {
-      // Thời gian giao dự kiến quá 12h, chuyển sang thứ 2 tuần tới
       deliveryDate = "thứ hai tuần tới";
-      timeHint = "sáng"; // Giao sớm vào thứ 2
+      timeHint = "sáng";
       priority = 1;
     }
   } else {
@@ -739,15 +707,22 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
       deliveryDate = deliveryDateMatch ? deliveryDateMatch[0] : null;
       if (deliveryDate) priority = priority || 1;
     }
+
+    // Gán deliveryDate = "hôm nay" và timeHint = "sáng" nếu có priority > 0, không có deliveryDate, và trước 12h
+    if (!deliveryDate && priority > 0 && now.hour() < 12) {
+      deliveryDate = deliveryTime.format("DD/MM/YYYY");
+      if (!timeHint) {
+        timeHint = "sáng";
+      }
+      console.log(`[parseDeliveryNoteForAddress] Gán deliveryDate="${deliveryDate}" và timeHint="sáng" do priority=${priority} và trước 12h`);
+    } else if (!deliveryDate && priority > 0) {
+      deliveryDate = deliveryTime.format("DD/MM/YYYY");
+      console.log(`[parseDeliveryNoteForAddress] Gán deliveryDate="${deliveryDate}" do priority=${priority}`);
+    }
   }
 
-  // Xử lý trường hợp "gấp"
-  if (normalizedNote.includes("gấp") && !urgentTimeMatch) {
-    priority = 2;
-    if (!deliveryDate) {
-      const deliveryTime = date_delivery ? moment(date_delivery, "DD/MM/YYYY HH:mm:ss").tz("Asia/Ho_Chi_Minh") : moment().tz("Asia/Ho_Chi_Minh");
-      deliveryDate = deliveryTime.format("DD/MM/YYYY");
-    }
+  if (!deliveryDate) {
+    console.warn(`[parseDeliveryNoteForAddress] Không tìm thấy deliveryDate cho ghi chú: "${normalizedNote}"`);
   }
 
   // Phát hiện loại hàng
@@ -768,6 +743,8 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
   console.log(`[parseDeliveryNoteForAddress] Result:`, result);
   return result;
 }
+
+module.exports = parseDeliveryNoteForAddress;
 
 // =========================================================== REGEX ĐỊA CHỈ GIAO HÀNG =========================================================
 // CHECK NẾU LÀ ĐỊA CHỈ NHÀ XE
@@ -1422,9 +1399,9 @@ async function fetchAndSaveOrders() {
 
     console.log(`Có ${orders.length} đơn hàng từ API_1`);
 
-    // Tạo hash để so sánh dữ liệu, bao gồm cả DiachiTruSo
+    // Tạo hash để so sánh dữ liệu, bao gồm cả DiachiTruSo và ToTal
     const currentHash = orders
-      .map((o) => `${o.MaPX}:${o.DcGiaohang}:${o.DiachiTruSo}`)
+      .map((o) => `${o.MaPX}:${o.DcGiaohang}:${o.DiachiTruSo}:${o.ToTal}`)
       .sort()
       .join("|");
     if (currentHash === lastApiOrderCount && orders.length > 0) {
@@ -1443,7 +1420,7 @@ async function fetchAndSaveOrders() {
 
     const connection = await createConnectionWithRetry();
     const [existingOrders] = await connection.query(
-      `SELECT id_order, address, old_address, DiachiTruSo FROM orders WHERE id_order IN (?)`,
+      `SELECT id_order, address, old_address, DiachiTruSo, SoLuongHangHoa FROM orders WHERE id_order IN (?)`,
       [orders.map((order) => order.MaPX)]
     );
     const addressMap = new Map(
@@ -1453,6 +1430,7 @@ async function fetchAndSaveOrders() {
           address: o.address,
           old_address: o.old_address,
           DiachiTruSo: o.DiachiTruSo,
+          SoLuongHangHoa: o.SoLuongHangHoa,
         },
       ])
     );
@@ -1469,6 +1447,8 @@ async function fetchAndSaveOrders() {
           const newAddress = res.data.DcGiaohang || "";
           const addressChanged =
             currentAddress && currentAddress !== newAddress;
+          // Chuẩn hóa ToTal thành số nguyên
+          const soLuongHangHoa = parseInt(order.ToTal) || 0; // Mặc định 0 nếu không hợp lệ
           return {
             MaPX: order.MaPX,
             DcGiaohang: newAddress,
@@ -1477,7 +1457,8 @@ async function fetchAndSaveOrders() {
             GhiChu: order.GhiChu,
             Ngayxuatkho: order.Ngayxuatkho,
             NgayPX: order.NgayPX,
-            DiachiTruSo: order.DiachiTruSo || "", // Lấy DiachiTruSo từ API_1
+            DiachiTruSo: order.DiachiTruSo || "",
+            SoLuongHangHoa: soLuongHangHoa,
             isEmpty: !newAddress,
             addressChanged,
             old_address: addressChanged
@@ -1530,23 +1511,25 @@ async function fetchAndSaveOrders() {
         order.Ngayxuatkho,
         ngayPX,
         order.old_address,
-        order.DiachiTruSo, // Thêm DiachiTruSo vào giá trị lưu
+        order.DiachiTruSo,
+        order.SoLuongHangHoa, // Thêm SoLuongHangHoa
       ];
     });
 
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at, old_address, DiachiTruSo)
+      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at, old_address, DiachiTruSo, SoLuongHangHoa)
       VALUES ?
       ON DUPLICATE KEY UPDATE
-      address = IF(VALUES(address) != '', VALUES(address), address),
-      status = VALUES(status),
-      SOKM = VALUES(SOKM),
-      delivery_note = VALUES(delivery_note),
-      date_delivery = VALUES(date_delivery),
-      created_at = VALUES(created_at),
-      old_address = IF(VALUES(old_address) IS NOT NULL AND old_address IS NULL, VALUES(old_address), old_address),
-      DiachiTruSo = VALUES(DiachiTruSo)
+        address = IF(VALUES(address) != '', VALUES(address), address),
+        status = VALUES(status),
+        SOKM = VALUES(SOKM),
+        delivery_note = VALUES(delivery_note),
+        date_delivery = VALUES(date_delivery),
+        created_at = VALUES(created_at),
+        old_address = IF(VALUES(old_address) IS NOT NULL AND old_address IS NULL, VALUES(old_address), old_address),
+        DiachiTruSo = VALUES(DiachiTruSo),
+        SoLuongHangHoa = VALUES(SoLuongHangHoa)
       `,
       [values]
     );
@@ -2324,8 +2307,13 @@ async function syncOrderStatus() {
 // CẬP NHẬT TRẠNG THÁI ĐƠN HÀNG
 async function updateOrderStatusToCompleted() {
   const startTime = Date.now();
+  let connection;
   try {
-    const connection = await mysql.createConnection(dbConfig);
+    connection = await createConnectionWithRetry();
+
+    // Bắt đầu giao dịch
+    await connection.beginTransaction();
+    console.log("[updateOrderStatusToCompleted] Bắt đầu giao dịch");
 
     const [orders] = await connection.query(
       `
@@ -2338,28 +2326,40 @@ async function updateOrderStatusToCompleted() {
 
     if (orders.length === 0) {
       console.log("Không có đơn hàng nào cần cập nhật trạng thái.");
+      await connection.commit();
       await connection.end();
       console.log(
-        `updateOrderStatusToCompleted thực thi trong ${
-          Date.now() - startTime
-        }ms`
+        `updateOrderStatusToCompleted thực thi trong ${Date.now() - startTime}ms`
       );
       return;
     }
 
-    const limit = pLimit(10);
     let api2RequestCount = 0;
+    const limit = pLimit(20);
+    const validStatuses = [
+      "Chờ xác nhận giao/lấy hàng",
+      "Đang giao/lấy hàng",
+      "Hoàn thành",
+      "Hủy",
+    ];
 
     const statusPromises = orders.map((order) =>
       limit(async () => {
         api2RequestCount++;
         try {
-          const response = await axios.get(
-            `${API_2_BASE}?qc=${order.id_order}`
+          const response = await retry(() =>
+            axios.get(`${API_2_BASE}?qc=${order.id_order}`)
           );
+          const tinhtranggiao = response.data.Tinhtranggiao || "";
+          if (!validStatuses.includes(tinhtranggiao)) {
+            console.warn(
+              `Trạng thái không hợp lệ từ API_2 cho đơn ${order.id_order}: ${tinhtranggiao}`
+            );
+            return null;
+          }
           return {
             MaPX: order.id_order,
-            Tinhtranggiao: response.data.Tinhtranggiao,
+            Tinhtranggiao: tinhtranggiao,
             currentStatus: order.status,
           };
         } catch (err) {
@@ -2382,48 +2382,77 @@ async function updateOrderStatusToCompleted() {
     const updates = [];
     for (const order of results) {
       const { MaPX, Tinhtranggiao, currentStatus } = order;
-
-      if (
-        currentStatus === "Chờ xác nhận giao/lấy hàng" &&
-        Tinhtranggiao === "Đang giao/lấy hàng"
-      ) {
-        updates.push(["Đang giao/lấy hàng", MaPX]);
-      } else if (
-        currentStatus === "Đang giao/lấy hàng" &&
-        Tinhtranggiao === "Hoàn thành"
-      ) {
-        updates.push(["Hoàn thành", MaPX]);
+      if (Tinhtranggiao && Tinhtranggiao !== currentStatus) {
+        // Kiểm tra trạng thái hiện tại trong database trước khi cập nhật
+        const [current] = await connection.query(
+          `SELECT status FROM orders WHERE id_order = ?`,
+          [MaPX]
+        );
+        if (current.length > 0 && current[0].status === currentStatus) {
+          updates.push([Tinhtranggiao, MaPX]);
+          console.log(
+            `Chuẩn bị cập nhật trạng thái cho đơn ${MaPX}: ${currentStatus} -> ${Tinhtranggiao}`
+          );
+        } else {
+          console.warn(
+            `Bỏ qua cập nhật cho đơn ${MaPX}: Trạng thái database (${current.length > 0 ? current[0].status : 'không tồn tại'}) không khớp với ${currentStatus}`
+          );
+        }
       }
     }
 
     if (updates.length > 0) {
-      const [updateResult] = await connection.query(
-        `
-        UPDATE orders
-        SET status = ?
-        WHERE id_order = ?
-        `,
-        updates.flat()
-      );
+      // Kiểm tra dữ liệu updates
+      console.log(`Dữ liệu updates:`, updates);
+      for (const [status, id_order] of updates) {
+        if (!status || !id_order) {
+          console.error(`Dữ liệu không hợp lệ trong updates: status=${status}, id_order=${id_order}`);
+          continue;
+        }
+        const [updateResult] = await connection.query(
+          `
+          UPDATE orders
+          SET status = ?
+          WHERE id_order = ?
+          `,
+          [status, id_order]
+        );
+        console.log(
+          `Cập nhật trạng thái cho đơn ${id_order}: ${status}, affectedRows: ${updateResult.affectedRows}`
+        );
+      }
+      await connection.commit();
+      console.log("[updateOrderStatusToCompleted] Đã commit giao dịch");
+    } else {
+      console.log("Không có đơn hàng nào cần cập nhật trạng thái.");
+      await connection.commit();
     }
 
     await connection.end();
     console.log(
-      `updateOrderStatusToCompleted thực thi trong ${Date.now() - startTime}ms`
+      `updateOrderStatusToCompleted thực thi trong ${Date.now() - startTime}ms, API_2 calls: ${api2RequestCount}`
     );
   } catch (error) {
-    console.error("Lỗi trong updateOrderStatusToCompleted:", error.message);
+    console.error("Lỗi trong updateOrderStatusToCompleted:", error.message, error.stack);
+    if (connection) {
+      try {
+        await connection.rollback();
+        console.log("[updateOrderStatusToCompleted] Đã rollback giao dịch");
+      } catch (rollbackError) {
+        console.error("Lỗi khi rollback:", rollbackError.message);
+      }
+      await connection.end();
+    }
     throw error;
   }
 }
 
 // ========================================================== SELECT ORDER FUNCTIONS ==========================================================
 // SẮP XẾP ĐƠN HÀNG
-async function groupOrders(page = 1, filterDate = null) {
+async function groupOrders(page = 1, filterDate = null, pageSize = 10) {
   const startTime = Date.now();
   try {
     const connection = await mysql.createConnection(dbConfig);
-    const pageSize = 10;
 
     if (!Number.isInteger(page) || page < 1) {
       throw new Error("Page phải là số nguyên dương");
@@ -2443,6 +2472,7 @@ async function groupOrders(page = 1, filterDate = null) {
 
     const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
 
+    // Đếm tổng số đơn chờ giao
     const [totalResult] = await connection.execute(
       `
       SELECT COUNT(*) as total
@@ -2455,7 +2485,22 @@ async function groupOrders(page = 1, filterDate = null) {
       queryParams
     );
 
+    // Đếm tổng số đơn quá 15 phút (status = 1)
+    const [overdueResult] = await connection.execute(
+      `
+      SELECT COUNT(*) as overdueCount
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND oa.status = 1
+        ${dateCondition}
+      `,
+      queryParams
+    );
+
     const totalOrders = totalResult[0].total;
+    const overdueCount = overdueResult[0].overdueCount;
     const totalPages = Math.ceil(totalOrders / pageSize);
 
     const query = `
@@ -2478,6 +2523,7 @@ async function groupOrders(page = 1, filterDate = null) {
         o.delivery_note,
         o.address AS current_address,
         o.old_address,
+        o.SoLuongHangHoa,
         CASE 
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -2529,15 +2575,16 @@ async function groupOrders(page = 1, filterDate = null) {
       delivery_note: row.delivery_note,
       current_address: row.current_address,
       old_address: row.old_address,
+      SoLuongHangHoa: row.SoLuongHangHoa !== null ? parseInt(row.SoLuongHangHoa) : 0,
       days_old: row.days_old,
       minutes_since_created:
         row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
+    // Sắp xếp kết quả (giữ nguyên logic của bạn)
     const sortedResults = parsedResults.sort((a, b) => {
       let priorityA, priorityB;
 
-      // Tiêu chí 1: Kiểm tra lỗi dữ liệu (thiếu district, ward, distance, hoặc travel_time)
       if (
         !a.district ||
         !a.ward ||
@@ -2545,13 +2592,9 @@ async function groupOrders(page = 1, filterDate = null) {
         a.travel_time === null
       ) {
         priorityA = 100;
-      }
-      // Tiêu chí 2: Kiểm tra distance > 100 km
-      else if (a.distance > 100) {
-        priorityA = 99; // Xếp trước các đơn lỗi nhưng sau các đơn bình thường
-      }
-      // Các tiêu chí hiện tại
-      else if (a.priority === 2) {
+      } else if (a.distance > 100) {
+        priorityA = 99;
+      } else if (a.priority === 2) {
         priorityA = 0;
       } else if (
         a.status === 1 &&
@@ -2706,7 +2749,6 @@ async function groupOrders(page = 1, filterDate = null) {
         return priorityA - priorityB;
       }
 
-      // Nếu cả hai đều có distance > 100 km, áp dụng các tiêu chí phụ và thêm date_delivery
       if (priorityA === 99 && priorityB === 99) {
         const isDeadlineTodayA =
           a.delivery_deadline &&
@@ -2744,7 +2786,6 @@ async function groupOrders(page = 1, filterDate = null) {
           return travelTimeA - travelTimeB;
         }
 
-        // Tiêu chí phụ: Sắp xếp theo date_delivery tăng dần
         const dateDeliveryA = a.date_delivery
           ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
             ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss")
@@ -2762,7 +2803,6 @@ async function groupOrders(page = 1, filterDate = null) {
         return a.id_order.localeCompare(b.id_order);
       }
 
-      // Các tiêu chí phụ cho các đơn hàng khác
       const isDeadlineTodayA =
         a.delivery_deadline &&
         moment(a.delivery_deadline).isSame(moment(), "day")
@@ -2822,6 +2862,7 @@ async function groupOrders(page = 1, filterDate = null) {
 
     return {
       totalOrders,
+      overdueCount, // Thêm trường mới
       totalPages,
       currentPage: page,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
@@ -2833,16 +2874,11 @@ async function groupOrders(page = 1, filterDate = null) {
   }
 }
 
-// SẮP XẾP ĐƠN HÀNG (PHIÊN BẢN 2)
-async function groupOrders2(page = 1, filterDate = null) {
+// SẮP XẾP ĐƠN HÀNG
+async function groupOrders2(filterDate = null) {
   const startTime = Date.now();
   try {
-    const connection = await mysql.createConnection(dbConfig);
-    const pageSize = 20;
-
-    if (!Number.isInteger(page) || page < 1) {
-      throw new Error("Page phải là số nguyên dương");
-    }
+    const connection = await createConnectionWithRetry();
 
     let dateCondition = "";
     let queryParams = [];
@@ -2851,13 +2887,13 @@ async function groupOrders2(page = 1, filterDate = null) {
       if (!moment(filterDate, "YYYY-MM-DD", true).isValid()) {
         throw new Error("Định dạng ngày không hợp lệ, sử dụng YYYY-MM-DD");
       }
-      dateCondition =
-        "DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = ?";
+      dateCondition = "DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = ?";
       queryParams.push(filterDate);
     }
 
     const whereClause = dateCondition ? `WHERE ${dateCondition}` : "";
 
+    // Đếm tổng số đơn chờ giao
     const [totalResult] = await connection.execute(
       `
       SELECT COUNT(*) as total
@@ -2870,8 +2906,22 @@ async function groupOrders2(page = 1, filterDate = null) {
       queryParams
     );
 
+    // Đếm tổng số đơn quá 15 phút (status = 1)
+    const [overdueResult] = await connection.execute(
+      `
+      SELECT COUNT(*) as overdueCount
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.address IS NOT NULL 
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+        AND oa.status = 1
+        ${dateCondition}
+      `,
+      queryParams
+    );
+
     const totalOrders = totalResult[0].total;
-    const totalPages = Math.ceil(totalOrders / pageSize);
+    const overdueCount = overdueResult[0].overdueCount;
 
     const query = `
       SELECT 
@@ -2893,6 +2943,7 @@ async function groupOrders2(page = 1, filterDate = null) {
         o.delivery_note,
         o.address AS current_address,
         o.old_address,
+        o.SoLuongHangHoa,
         CASE 
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -2904,6 +2955,42 @@ async function groupOrders2(page = 1, filterDate = null) {
       WHERE oa.address IS NOT NULL 
         AND o.status = 'Chờ xác nhận giao/lấy hàng'
         ${dateCondition}
+      ORDER BY
+        CASE
+          WHEN oa.district IS NULL OR oa.ward IS NULL OR oa.distance IS NULL OR oa.travel_time IS NULL THEN 100
+          WHEN o.priority = 2 THEN 0
+          WHEN oa.status = 1 AND o.priority = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 1
+          WHEN days_old = 2 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 2
+          WHEN days_old = 2 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 3
+          WHEN days_old = 1 AND oa.status = 1 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 4
+          WHEN days_old = 1 AND oa.status = 0 AND o.delivery_deadline IS NOT NULL
+               AND o.delivery_deadline <= NOW() + INTERVAL 2 HOUR THEN 5
+          WHEN oa.status = 1 AND o.priority = 0 THEN 10
+          WHEN oa.status = 1 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 11
+          WHEN oa.status = 0 AND o.priority = 1 
+               AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 12
+          WHEN oa.status = 0 AND o.priority = 0 THEN 13
+          WHEN days_old = 2 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 14
+          WHEN days_old = 1 AND (o.delivery_deadline IS NULL OR o.delivery_deadline > NOW() + INTERVAL 2 HOUR) THEN 15
+          ELSE 16
+        END ASC,
+        CASE 
+          WHEN DATE(o.delivery_deadline) = CURDATE() THEN 0
+          ELSE 1
+        END ASC,
+        CASE 
+          WHEN o.delivery_deadline IS NOT NULL THEN TIMESTAMPDIFF(MINUTE, NOW(), o.delivery_deadline)
+          ELSE 999999
+        END ASC,
+        COALESCE(oa.distance, 999999) ASC,
+        COALESCE(oa.travel_time, 999999) ASC,
+        o.created_at ASC
+      LIMIT 1000
     `;
 
     const [results] = await connection.execute(query, queryParams);
@@ -2913,60 +3000,41 @@ async function groupOrders2(page = 1, filterDate = null) {
       id_order: row.id_order,
       address: row.address || "N/A",
       source: row.source,
-      distance:
-        row.distance !== null ? parseFloat(row.distance.toFixed(2)) : null,
+      distance: row.distance !== null ? parseFloat(row.distance.toFixed(2)) : null,
       travel_time: row.travel_time !== null ? row.travel_time : null,
       status: row.status,
       created_at: row.created_at
-        ? moment(row.created_at)
-            .tz("Asia/Ho_Chi_Minh")
-            .format("YYYY-MM-DD HH:mm:ss")
+        ? moment(row.created_at).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
         : null,
       district: row.district || "N/A",
       ward: row.ward || "N/A",
-      old_distance:
-        row.old_distance !== null
-          ? parseFloat(row.old_distance.toFixed(2))
-          : null,
-      old_travel_time:
-        row.old_travel_time !== null ? row.old_travel_time : null,
-      SOKM:
-        row.SOKM !== null && !isNaN(parseFloat(row.SOKM))
-          ? parseFloat(parseFloat(row.SOKM).toFixed(2))
-          : null,
+      old_distance: row.old_distance !== null ? parseFloat(row.old_distance.toFixed(2)) : null,
+      old_travel_time: row.old_travel_time !== null ? row.old_travel_time : null,
+      SOKM: row.SOKM !== null && !isNaN(parseFloat(row.SOKM))
+        ? parseFloat(parseFloat(row.SOKM).toFixed(2))
+        : null,
       priority: row.priority,
       delivery_deadline: row.delivery_deadline
-        ? moment(row.delivery_deadline)
-            .tz("Asia/Ho_Chi_Minh")
-            .format("YYYY-MM-DD HH:mm:ss")
+        ? moment(row.delivery_deadline).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
         : null,
       date_delivery: row.date_delivery,
       delivery_note: row.delivery_note,
       current_address: row.current_address,
       old_address: row.old_address,
+      SoLuongHangHoa: row.SoLuongHangHoa !== null ? parseInt(row.SoLuongHangHoa) : 0,
       days_old: row.days_old,
-      minutes_since_created:
-        row.minutes_since_created !== null ? row.minutes_since_created : 0,
+      minutes_since_created: row.minutes_since_created !== null ? row.minutes_since_created : 0,
     }));
 
+    // Sắp xếp kết quả (tương tự groupOrders)
     const sortedResults = parsedResults.sort((a, b) => {
       let priorityA, priorityB;
 
-      // Tiêu chí 1: Kiểm tra lỗi dữ liệu (thiếu district, ward, distance, hoặc travel_time)
-      if (
-        !a.district ||
-        !a.ward ||
-        a.distance === null ||
-        a.travel_time === null
-      ) {
+      if (!a.district || !a.ward || a.distance === null || a.travel_time === null) {
         priorityA = 100;
-      }
-      // Tiêu chí 2: Kiểm tra distance > 100 km
-      else if (a.distance > 100) {
-        priorityA = 99; // Xếp trước các đơn lỗi nhưng sau các đơn bình thường
-      }
-      // Các tiêu chí hiện tại
-      else if (a.priority === 2) {
+      } else if (a.distance > 100) {
+        priorityA = 99;
+      } else if (a.priority === 2) {
         priorityA = 0;
       } else if (
         a.status === 1 &&
@@ -3008,41 +3076,32 @@ async function groupOrders2(page = 1, filterDate = null) {
       } else if (
         a.status === 1 &&
         a.priority === 1 &&
-        (!a.delivery_deadline ||
-          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!a.delivery_deadline || moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityA = 11;
       } else if (
         a.status === 0 &&
         a.priority === 1 &&
-        (!a.delivery_deadline ||
-          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!a.delivery_deadline || moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityA = 12;
       } else if (a.status === 0 && a.priority === 0) {
         priorityA = 13;
       } else if (
         a.days_old === 2 &&
-        (!a.delivery_deadline ||
-          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!a.delivery_deadline || moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityA = 14;
       } else if (
         a.days_old === 1 &&
-        (!a.delivery_deadline ||
-          moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!a.delivery_deadline || moment(a.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityA = 15;
       } else {
         priorityA = 16;
       }
 
-      if (
-        !b.district ||
-        !b.ward ||
-        b.distance === null ||
-        b.travel_time === null
-      ) {
+      if (!b.district || !b.ward || b.distance === null || b.travel_time === null) {
         priorityB = 100;
       } else if (b.distance > 100) {
         priorityB = 99;
@@ -3088,29 +3147,25 @@ async function groupOrders2(page = 1, filterDate = null) {
       } else if (
         b.status === 1 &&
         b.priority === 1 &&
-        (!b.delivery_deadline ||
-          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!b.delivery_deadline || moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityB = 11;
       } else if (
         b.status === 0 &&
         b.priority === 1 &&
-        (!b.delivery_deadline ||
-          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!b.delivery_deadline || moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityB = 12;
       } else if (b.status === 0 && b.priority === 0) {
         priorityB = 13;
       } else if (
         b.days_old === 2 &&
-        (!b.delivery_deadline ||
-          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!b.delivery_deadline || moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityB = 14;
       } else if (
         b.days_old === 1 &&
-        (!b.delivery_deadline ||
-          moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
+        (!b.delivery_deadline || moment(b.delivery_deadline).isAfter(moment().add(2, "hours")))
       ) {
         priorityB = 15;
       } else {
@@ -3121,28 +3176,15 @@ async function groupOrders2(page = 1, filterDate = null) {
         return priorityA - priorityB;
       }
 
-      // Nếu cả hai đều có distance > 100 km, áp dụng các tiêu chí phụ và thêm date_delivery
       if (priorityA === 99 && priorityB === 99) {
-        const isDeadlineTodayA =
-          a.delivery_deadline &&
-          moment(a.delivery_deadline).isSame(moment(), "day")
-            ? 0
-            : 1;
-        const isDeadlineTodayB =
-          b.delivery_deadline &&
-          moment(b.delivery_deadline).isSame(moment(), "day")
-            ? 0
-            : 1;
+        const isDeadlineTodayA = a.delivery_deadline && moment(a.delivery_deadline).isSame(moment(), "day") ? 0 : 1;
+        const isDeadlineTodayB = b.delivery_deadline && moment(b.delivery_deadline).isSame(moment(), "day") ? 0 : 1;
         if (isDeadlineTodayA !== isDeadlineTodayB) {
           return isDeadlineTodayA - isDeadlineTodayB;
         }
 
-        const timeToDeadlineA = a.delivery_deadline
-          ? moment(a.delivery_deadline).diff(moment(), "minutes")
-          : 999999;
-        const timeToDeadlineB = b.delivery_deadline
-          ? moment(b.delivery_deadline).diff(moment(), "minutes")
-          : 999999;
+        const timeToDeadlineA = a.delivery_deadline ? moment(a.delivery_deadline).diff(moment(), "minutes") : 999999;
+        const timeToDeadlineB = b.delivery_deadline ? moment(b.delivery_deadline).diff(moment(), "minutes") : 999999;
         if (timeToDeadlineA !== timeToDeadlineB) {
           return timeToDeadlineA - timeToDeadlineB;
         }
@@ -3159,7 +3201,6 @@ async function groupOrders2(page = 1, filterDate = null) {
           return travelTimeA - travelTimeB;
         }
 
-        // Tiêu chí phụ: Sắp xếp theo date_delivery tăng dần
         const dateDeliveryA = a.date_delivery
           ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss").isValid()
             ? moment(a.date_delivery, "DD/MM/YYYY HH:mm:ss")
@@ -3177,27 +3218,14 @@ async function groupOrders2(page = 1, filterDate = null) {
         return a.id_order.localeCompare(b.id_order);
       }
 
-      // Các tiêu chí phụ cho các đơn hàng khác
-      const isDeadlineTodayA =
-        a.delivery_deadline &&
-        moment(a.delivery_deadline).isSame(moment(), "day")
-          ? 0
-          : 1;
-      const isDeadlineTodayB =
-        b.delivery_deadline &&
-        moment(b.delivery_deadline).isSame(moment(), "day")
-          ? 0
-          : 1;
+      const isDeadlineTodayA = a.delivery_deadline && moment(a.delivery_deadline).isSame(moment(), "day") ? 0 : 1;
+      const isDeadlineTodayB = b.delivery_deadline && moment(b.delivery_deadline).isSame(moment(), "day") ? 0 : 1;
       if (isDeadlineTodayA !== isDeadlineTodayB) {
         return isDeadlineTodayA - isDeadlineTodayB;
       }
 
-      const timeToDeadlineA = a.delivery_deadline
-        ? moment(a.delivery_deadline).diff(moment(), "minutes")
-        : 999999;
-      const timeToDeadlineB = b.delivery_deadline
-        ? moment(b.delivery_deadline).diff(moment(), "minutes")
-        : 999999;
+      const timeToDeadlineA = a.delivery_deadline ? moment(a.delivery_deadline).diff(moment(), "minutes") : 999999;
+      const timeToDeadlineB = b.delivery_deadline ? moment(b.delivery_deadline).diff(moment(), "minutes") : 999999;
       if (timeToDeadlineA !== timeToDeadlineB) {
         return timeToDeadlineA - timeToDeadlineB;
       }
@@ -3231,23 +3259,157 @@ async function groupOrders2(page = 1, filterDate = null) {
       return a.id_order.localeCompare(b.id_order);
     });
 
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedResults = sortedResults.slice(startIndex, endIndex);
-
     return {
       totalOrders,
-      totalPages,
-      currentPage: page,
+      overdueCount,
+      orders: sortedResults,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
-      orders: paginatedResults,
     };
   } catch (error) {
-    console.error("Lỗi trong groupOrders:", error.message, error.stack);
+    console.error("Lỗi trong groupOrders2:", error.message, error.stack);
     throw error;
   }
 }
 
+// LẤY DANH SÁCH ĐƠN QUÁ HẠN
+async function fetchOverdueOrders(dateFilter = null) {
+  try {
+    const query = new URLSearchParams();
+    if (dateFilter) {
+      query.append("date", dateFilter);
+    }
+    const res = await fetch(`/orders/overdue-list?${query.toString()}`);
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(`Không thể tải danh sách đơn quá hạn: ${errorData.error || "Lỗi server không xác định"}`);
+    }
+    const data = await res.json();
+    overdueOrders = data.orders || [];
+    overdueOrderIds = new Set(overdueOrders.map((o) => o.id_order));
+    overdueCount = overdueOrders.length; // Cập nhật overdueCount
+    updateStats(totalOrders, overdueCount);
+    return overdueOrders;
+  } catch (err) {
+    console.error("Lỗi khi tải danh sách đơn quá hạn:", err.message);
+    $("#error").text("Lỗi khi tải danh sách đơn quá hạn: " + err.message).show();
+    return [];
+  }
+}
+
+// CẬP NHẬT THÔNG BÁO
+function renderNotifications() {
+  const notificationList = $("#notification-list");
+  notificationList.empty();
+
+  if (overdueOrders.length > 0) {
+    overdueOrders.sort((a, b) => {
+      const aViewed = viewedNotifications.includes(a.id_order);
+      const bViewed = viewedNotifications.includes(b.id_order);
+      if (aViewed && !bViewed) return 1;
+      if (!aViewed && bViewed) return -1;
+      return moment(b.created_at).diff(moment(a.created_at)); // Sắp xếp theo thời gian tạo
+    });
+
+    overdueOrders.forEach((o) => {
+      const createdAt = moment(o.created_at).tz("Asia/Ho_Chi_Minh").format("DD/MM/YYYY HH:mm:ss");
+      const isViewed = viewedNotifications.includes(o.id_order);
+      notificationList.append(
+        `<div class="notification-item ${isViewed ? "viewed" : "unviewed"}" data-order-id="${o.id_order}">
+          <strong class="notification-item-text">CẢNH BÁO:</strong> Đơn hàng 
+          <strong class="notification-item-text">${o.id_order}</strong> quá 15 phút (Tạo: ${createdAt})
+        </div>`
+      );
+    });
+  } else {
+    notificationList.append(`<div class="notification-item">Không có đơn hàng quá hạn.</div>`);
+  }
+  updateNotificationCount();
+}
+
+// Cập nhật Socket.IO listeners
+io.on("ordersUpdated", (data) => {
+  console.log("Nhận danh sách đơn hàng mới từ Socket.IO:", data);
+  if (isUserInteracting) {
+    console.log("Bỏ qua làm mới bảng do người dùng đang tương tác");
+    if (data.nextRunTime) {
+      startCountdownTimer(data.nextRunTime);
+    }
+    return;
+  }
+
+  if (data.data) {
+    totalPages = data.data.totalPages || 1;
+    currentPage = data.data.currentPage || 1;
+    totalOrders = data.data.totalOrders || 0;
+    allOrders = data.data.orders || [];
+
+    // Cập nhật overdueOrders từ data.overdueOrders
+    overdueOrders = data.overdueOrders || [];
+    overdueOrderIds = new Set(overdueOrders.map((o) => o.id_order));
+    overdueCount = overdueOrders.length;
+
+    const keyword = $("#searchInput").val().trim();
+    const selectedDistricts = $("#districtSelect").val() || [];
+    const selectedWards = $("#wardSelect").val() || [];
+    const hasFilters = selectedDistricts.length > 0 || selectedWards.length > 0;
+    const hasSearch = keyword.length > 0;
+
+    if (hasSearch) {
+      console.log("Giữ trạng thái tìm kiếm, gọi searchOrder");
+      searchOrder();
+    } else if (hasFilters || currentDateFilter) {
+      console.log("Giữ trạng thái bộ lọc, gọi applyFilters");
+      applyFilters();
+    } else {
+      console.log("Làm mới bảng với dữ liệu từ ordersUpdated");
+      renderOrders(data.data.orders);
+      renderNotifications();
+      renderPagination();
+      updateStats(totalOrders, overdueCount);
+    }
+  }
+  if (data.nextRunTime) {
+    startCountdownTimer(data.nextRunTime);
+  }
+});
+
+// Cập nhật fetchOrders để đồng bộ overdueOrders
+async function fetchOrders(page = 1) {
+  try {
+    $("#loading").addClass("show");
+    $("#error").hide();
+
+    apiUrl = currentDateFilter ? "/orders/filter-by-date" : "/grouped-orders";
+    const query = new URLSearchParams({ page });
+    if (currentDateFilter) {
+      query.append("filterDate", currentDateFilter);
+    }
+
+    const res = await fetch(`${apiUrl}?${query.toString()}`);
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(`Không thể tải đơn hàng: ${errorData.error || "Lỗi server không xác định"}`);
+    }
+    const data = await res.json();
+
+    totalPages = data.totalPages || 1;
+    currentPage = data.currentPage || 1;
+    totalOrders = data.totalOrders || 0;
+    allOrders = data.orders || [];
+    renderOrders(data.orders);
+    renderPagination();
+    await fetchOverdueOrders(currentDateFilter); // Đồng bộ overdueOrders
+    renderNotifications();
+    updateStats(totalOrders, overdueCount);
+  } catch (err) {
+    console.error("Lỗi trong fetchOrders:", err.message);
+    $("#error").text("Lỗi khi tải đơn hàng: " + err.message).show();
+    $("#orders-wrapper").html("");
+    $("#pagination").hide();
+  } finally {
+    $("#loading").removeClass("show");
+  }
+}
 // =========================================================== PHÂN TÍCH GHI CHÚ GIAO HÀNG ===========================================================
 /**
  * Phân tích ghi chú giao hàng và cập nhật priority, delivery_deadline, analyzed
@@ -3821,8 +3983,8 @@ async function analyzeDeliveryNote() {
 async function main(page = 1, io) {
   const startTime = Date.now();
   let api2Calls = 0,
-    openAICalls = 0,
-    tomtomCalls = 0;
+      openAICalls = 0,
+      tomtomCalls = 0;
 
   try {
     console.log(
@@ -3833,30 +3995,34 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
+    // Bước 1: Lấy và lưu đơn hàng
     console.log("📦 Bước 1: Lấy và lưu đơn hàng...");
     const orders = await fetchAndSaveOrders();
-    api2Calls += orders.length;
+    api2Calls += orders.length; // Đếm API calls từ fetchAndSaveOrders
     console.log(`✅ Đã lưu ${orders.length} đơn hàng vào orders`);
     console.log(
       "================================================================="
     );
 
+    // Bước 2: Đồng bộ trạng thái đơn hàng
     console.log("🔄 Bước 2: Đồng bộ trạng thái đơn hàng...");
     await syncOrderStatus();
-    api2Calls += orders.length;
+    api2Calls += orders.length; // Đếm API calls từ syncOrderStatus (giả sử mỗi đơn gọi 1 API)
     console.log("✅ Đã đồng bộ trạng thái đơn hàng");
     console.log(
       "================================================================="
     );
 
+    // Bước 3: Cập nhật trạng thái đơn hàng hoàn thành
     console.log("📋 Bước 3: Cập nhật trạng thái đơn hàng hoàn thành...");
     await updateOrderStatusToCompleted();
-    api2Calls += orders.length;
+    api2Calls += orders.length; // Đếm API calls từ updateOrderStatusToCompleted
     console.log("✅ Đã cập nhật trạng thái các đơn hàng hoàn thành");
     console.log(
       "================================================================="
     );
 
+    // Bước 4: Chuẩn hóa và ánh xạ địa chỉ
     console.log("🗺️ Bước 4: Chuẩn hóa và ánh xạ địa chỉ...");
     const connection = await createConnectionWithRetry();
     const [unstandardizedOrders] = await connection.query(
@@ -3883,7 +4049,7 @@ async function main(page = 1, io) {
     const ordersToStandardize = unstandardizedOrders.map((order) => ({
       MaPX: order.MaPX,
       DcGiaohang: order.DcGiaohang,
-      DiachiTruSo: order.DiachiTruSo, // Thêm DiachiTruSo
+      DiachiTruSo: order.DiachiTruSo,
       isEmpty: !order.DcGiaohang,
       addressChanged: order.DcGiaohang !== order.old_address,
     }));
@@ -3895,7 +4061,7 @@ async function main(page = 1, io) {
     let standardizedOrders = [];
     if (ordersToStandardize.length > 0) {
       standardizedOrders = await standardizeAddresses(ordersToStandardize);
-      openAICalls += standardizedOrders.length;
+      openAICalls += standardizedOrders.filter(o => o.source === "OpenAI").length; // Đếm khi dùng OpenAI
       console.log(`[main] Đã chuẩn hóa ${standardizedOrders.length} đơn hàng`);
     } else {
       console.log("[main] Không có đơn hàng nào cần chuẩn hóa");
@@ -3904,6 +4070,7 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
+    // Bước 5: Cập nhật địa chỉ chuẩn hóa
     console.log("💾 Bước 5: Cập nhật địa chỉ chuẩn hóa...");
     if (standardizedOrders.length > 0) {
       await updateStandardizedAddresses(standardizedOrders);
@@ -3915,14 +4082,16 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
+    // Bước 6: Tính toán khoảng cách và thời gian
     console.log("📏 Bước 6: Tính toán khoảng cách và thời gian...");
     await calculateDistances();
-    tomtomCalls += ordersToStandardize.length;
+    tomtomCalls += standardizedOrders.length; // Đếm TomTom calls từ calculateDistances
     console.log("✅ Đã tính toán khoảng cách và thời gian");
     console.log(
       "================================================================="
     );
 
+    // Bước 7: Phân tích ghi chú đơn hàng
     console.log("📝 Bước 7: Phân tích ghi chú đơn hàng...");
     await analyzeDeliveryNote();
     console.log("✅ Đã phân tích ghi chú và cập nhật ưu tiên");
@@ -3930,6 +4099,7 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
+    // Bước 8: Cập nhật trạng thái ưu tiên đơn hàng
     console.log("⏫ Bước 8: Cập nhật trạng thái ưu tiên đơn hàng...");
     await updatePriorityStatus(io);
     console.log("✅ Đã cập nhật trạng thái ưu tiên");
@@ -3937,8 +4107,34 @@ async function main(page = 1, io) {
       "================================================================="
     );
 
-    console.log(`🔍 Bước 9: Lấy đơn hàng gần nhất (trang ${page})...`);
-    const groupedOrders = await groupOrders(page);
+    // Bước 9: Lấy đơn hàng
+    console.log(`🔍 Bước 9: Lấy đơn hàng (trang ${page} và tất cả đơn)...`);
+    const groupedOrders = await groupOrders(page, null, 10); // Cho index.html
+    const groupedOrders2 = await groupOrders2(null); // Cho static-orders.html
+    console.log(`[main] Đã lấy ${groupedOrders.orders.length} đơn hàng với pageSize=10`);
+    console.log(`[main] Đã lấy ${groupedOrders2.orders.length} đơn hàng (tất cả)`);
+    console.log(
+      "================================================================="
+    );
+
+    // Bước 10: Lấy danh sách đơn quá hạn
+    console.log("📢 Bước 10: Lấy danh sách đơn quá hạn...");
+    const overdueConnection = await createConnectionWithRetry();
+    const [overdueOrders] = await overdueConnection.query(
+      `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE a.status = 1
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+      ORDER BY o.created_at DESC
+      LIMIT 1000
+      `,
+      []
+    );
+    await overdueConnection.end();
+    const overdueCount = overdueOrders.length;
+    console.log(`[main] Đã lấy ${overdueCount} đơn hàng quá hạn`);
     console.log(
       "================================================================="
     );
@@ -3952,9 +4148,13 @@ async function main(page = 1, io) {
       io.emit("ordersUpdated", {
         message: "Danh sách đơn hàng đã được cập nhật",
         data: groupedOrders,
+        data2: groupedOrders2,
+        overdueOrders: overdueOrders,
+        overdueCount: overdueCount,
+        totalOrders: groupedOrders2.totalOrders,
         nextRunTime: getNextCronRunTime(),
       });
-      console.log(`[main] Đã gửi danh sách đơn hàng qua Socket.io`);
+      console.log(`[main] Đã gửi danh sách đơn hàng qua Socket.IO`);
     }
 
     console.log("🏁 Công cụ giao hàng hoàn tất.");
@@ -4009,9 +4209,9 @@ app.get("/grouped-orders", async (req, res) => {
     }
 
     console.log(
-      `Gọi groupOrders với page: ${page}, date: ${filterDate || "all"}`
+      `Gọi groupOrders với page: ${page}, date: ${filterDate || "all"}, pageSize: 10`
     );
-    const groupedOrders = await groupOrders(page, filterDate);
+    const groupedOrders = await groupOrders(page, filterDate, 10);
 
     console.timeEnd("grouped-orders");
     res.status(200).json(groupedOrders);
@@ -4025,17 +4225,10 @@ app.get("/grouped-orders", async (req, res) => {
 app.get("/grouped-orders2", async (req, res) => {
   try {
     console.time("grouped-orders2");
-    const page = parseInt(req.query.page) || 1;
     const filterDate = req.query.date || null;
 
-    if (isNaN(page) || page < 1) {
-      return res.status(400).json({ error: "Page phải là số nguyên dương" });
-    }
-
-    console.log(
-      `Gọi groupOrders với page: ${page}, date: ${filterDate || "all"}`
-    );
-    const groupedOrders = await groupOrders2(page, filterDate);
+    console.log(`Gọi groupOrders2 với date: ${filterDate || "all"}`);
+    const groupedOrders = await groupOrders2(filterDate);
 
     console.timeEnd("grouped-orders2");
     res.status(200).json(groupedOrders);
@@ -4515,6 +4708,33 @@ app.get("/orders/find-by-id", async (req, res) => {
   } catch (err) {
     console.error("Lỗi khi tìm kiếm đơn hàng:", err.message);
     res.status(500).json({ error: "Lỗi server khi tìm kiếm đơn hàng." });
+  }
+});
+
+// LẤY TẤT CẢ ĐƠN HÀNG QUÁ HẠN
+app.get("/orders/overdue-list", async (req, res) => {
+  try {
+    const connection = await createConnectionWithRetry();
+    const date = req.query.date || null;
+    let query = `
+      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      FROM orders o
+      LEFT JOIN orders_address a ON o.id_order = a.id_order
+      WHERE a.status = 1
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+    `;
+    const params = [];
+    if (date && moment(date, "YYYY-MM-DD", true).isValid()) {
+      query += ` AND DATE(o.created_at) = ?`;
+      params.push(date);
+    }
+    query += ` ORDER BY o.created_at DESC`;
+    const [rows] = await connection.query(query, params);
+    await connection.end();
+    res.json({ orders: rows });
+  } catch (err) {
+    console.error("Lỗi khi lấy danh sách đơn quá hạn:", err.message);
+    res.status(500).json({ error: "Lỗi server khi lấy danh sách đơn quá hạn." });
   }
 });
 // KHỞI TẠO SERVER
