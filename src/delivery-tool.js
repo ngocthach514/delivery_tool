@@ -566,7 +566,7 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
     .toLowerCase()
     .replace(/(trc|truoc|trước khi)/g, "trước")
     .replace(/(gap|gấp|khẩn cấp|giao ngay|nhanh nhất|liền|hỏa tốc)/g, "gấp")
-    .replace(/(sn|sớm nhất|sớm nhé|sang som|sáng sớm|som mai|sớm mai|nhanh nhe|nhanh nhé|sớm giúp|sớm nha)/g, "sớm")
+    .replace(/(sn|sớm nhất|sớm nhé|sang som|sáng sớm|som mai|sớm mai|nhanh nhe|nhanh nhé|sớm giúp|sớm nha|sớm)/g, "sớm")
     .replace(/(sang|sáng|sang mai|sáng mai|sang hom nay|sáng hôm nay|buổi sáng|sang nay|sáng nay)/g, "sáng")
     .replace(/(chiu|chiu nay|chiều|chiều hnay|chiều hôm nay|chieu hom nay|chieu nay|buổi chiều|chiều nay)/g, "chiều")
     .replace(/(toi|toi nay|tối nay|tối|tối hnay|tối hôm nay|toi hom nay|buổi tối|tối nay)/g, "tối")
@@ -743,8 +743,6 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
   console.log(`[parseDeliveryNoteForAddress] Result:`, result);
   return result;
 }
-
-module.exports = parseDeliveryNoteForAddress;
 
 // =========================================================== REGEX ĐỊA CHỈ GIAO HÀNG =========================================================
 // CHECK NẾU LÀ ĐỊA CHỈ NHÀ XE
