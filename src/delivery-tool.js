@@ -3523,31 +3523,47 @@ async function fetchOrderDetails(id) {
       address: order.address || "N/A",
       current_address: order.current_address || "N/A",
       old_address: order.old_address || "N/A",
-      SOKM: order.SOKM !== null && !isNaN(parseFloat(order.SOKM))
-        ? parseFloat(parseFloat(order.SOKM).toFixed(2))
-        : null,
+      SOKM:
+        order.SOKM !== null && !isNaN(parseFloat(order.SOKM))
+          ? parseFloat(parseFloat(order.SOKM).toFixed(2))
+          : null,
       priority: order.priority || 0,
       delivery_note: order.delivery_note || "N/A",
       date_delivery: order.date_delivery || "N/A",
       created_at: order.created_at
-        ? moment(order.created_at).tz("Asia/Ho_Chi_Minh").format("YYYY-MM-DD HH:mm:ss")
+        ? moment(order.created_at)
+            .tz("Asia/Ho_Chi_Minh")
+            .format("YYYY-MM-DD HH:mm:ss")
         : "N/A",
       status: order.status || "N/A",
       DiachiTruSo: order.DiachiTruSo || "N/A",
-      SoLuongHangHoa: order.SoLuongHangHoa !== null ? parseInt(order.SoLuongHangHoa) : 0,
+      SoLuongHangHoa:
+        order.SoLuongHangHoa !== null ? parseInt(order.SoLuongHangHoa) : 0,
       district: order.district || "N/A",
       ward: order.ward || "N/A",
-      distance: order.distance !== null ? parseFloat(order.distance.toFixed(2)) : null,
+      distance:
+        order.distance !== null ? parseFloat(order.distance.toFixed(2)) : null,
       travel_time: order.travel_time !== null ? order.travel_time : null,
-      old_distance: order.old_distance !== null ? parseFloat(order.old_distance.toFixed(2)) : null,
-      old_travel_time: order.old_travel_time !== null ? order.old_travel_time : null,
+      old_distance:
+        order.old_distance !== null
+          ? parseFloat(order.old_distance.toFixed(2))
+          : null,
+      old_travel_time:
+        order.old_travel_time !== null ? order.old_travel_time : null,
       address_status: order.address_status || 0,
     };
 
-    console.log(`[fetchOrderDetails] Đã lấy chi tiết đơn hàng ${id} trong ${Date.now() - startTime}ms`);
+    console.log(
+      `[fetchOrderDetails] Đã lấy chi tiết đơn hàng ${id} trong ${
+        Date.now() - startTime
+      }ms`
+    );
     return parsedOrder;
   } catch (error) {
-    console.error(`[fetchOrderDetails] Lỗi khi lấy chi tiết đơn hàng ${id}:`, error.message);
+    console.error(
+      `[fetchOrderDetails] Lỗi khi lấy chi tiết đơn hàng ${id}:`,
+      error.message
+    );
     throw error;
   }
 }
@@ -3562,28 +3578,38 @@ async function fetchOrderDetailsFromAPIs(maPX) {
 
   try {
     if (!maPX) {
-      console.warn("[fetchOrderDetailsFromAPIs] Thiếu MaPX, không thể lấy dữ liệu");
+      console.warn(
+        "[fetchOrderDetailsFromAPIs] Thiếu MaPX, không thể lấy dữ liệu"
+      );
       return [];
     }
 
-    console.log(`📦 [fetchOrderDetailsFromAPIs] Bắt đầu lấy dữ liệu từ API_1 cho MaPX: ${maPX}`);
+    console.log(
+      `📦 [fetchOrderDetailsFromAPIs] Bắt đầu lấy dữ liệu từ API_1 cho MaPX: ${maPX}`
+    );
 
     const response1 = await retry(() => axios.get(API_1));
     let ordersFromAPI1 = response1.data;
 
     if (!Array.isArray(ordersFromAPI1)) {
-      console.warn("[fetchOrderDetailsFromAPIs] API_1 không trả về mảng, chuyển thành mảng");
+      console.warn(
+        "[fetchOrderDetailsFromAPIs] API_1 không trả về mảng, chuyển thành mảng"
+      );
       ordersFromAPI1 = [ordersFromAPI1].filter(Boolean);
     }
 
     if (!ordersFromAPI1.length) {
-      console.warn("[fetchOrderDetailsFromAPIs] Không có dữ liệu hợp lệ từ API_1");
+      console.warn(
+        "[fetchOrderDetailsFromAPIs] Không có dữ liệu hợp lệ từ API_1"
+      );
       return [];
     }
 
     const order = ordersFromAPI1.find((order) => order.MaPX === maPX);
     if (!order) {
-      console.warn(`[fetchOrderDetailsFromAPIs] Không tìm thấy đơn hàng với MaPX: ${maPX}`);
+      console.warn(
+        `[fetchOrderDetailsFromAPIs] Không tìm thấy đơn hàng với MaPX: ${maPX}`
+      );
       return [];
     }
 
@@ -3668,7 +3694,6 @@ async function generateBarcode(text) {
 
 // RENDER BIÊN BẢN GIAO HÀNG
 async function renderDeliveryNote(order) {
-
   // Tạo barcode
   const barcodeTop = await generateBarcode(order.MaPX || "N/A");
   const barcodeFooter = await generateBarcode(
@@ -3707,16 +3732,17 @@ async function renderDeliveryNote(order) {
     order.Xuatlist.forEach((item) => {
       TongSL += item.SoLg;
       TienHang += item.Dongia * item.SoLg;
-      TienVAT += ((item.Dongia * item.SoLg) * item.VatXuat)/100;
+      TienVAT += (item.Dongia * item.SoLg * item.VatXuat) / 100;
     });
   }
   let TongThanhTien = TienHang + TienVAT;
   // Chuyển số thành chữ tiếng Việt
   const config = new ReadingConfig();
   config.unit = ["đồng"];
-  const totalAmountText = TongThanhTien != null && !isNaN(TongThanhTien)
-    ? doReadNumber(config, Math.round(TongThanhTien).toString())
-    : "Không xác định";
+  const totalAmountText =
+    TongThanhTien != null && !isNaN(TongThanhTien)
+      ? doReadNumber(config, Math.round(TongThanhTien).toString())
+      : "Không xác định";
   // Tạo HTML
   return `
 <!DOCTYPE html>
@@ -3856,7 +3882,9 @@ async function renderDeliveryNote(order) {
         </div>
         <div class="barcode-inline" style="margin-top: -10px; width: 40%;">
           <img src="${barcodeTop}" alt="barcode-top" style="width: 155px" />
-          <p class="barcode" style="text-align: center;">${order.MaPX || "N/A"}</p>
+          <p class="barcode" style="text-align: center;">${
+            order.MaPX || "N/A"
+          }</p>
           <p class="code" style="text-align: center; margin-top: -10px; display: flex; flex-wrap: wrap;">
             ${order.MaKH || "N/A"}
           </p>
@@ -3864,19 +3892,27 @@ async function renderDeliveryNote(order) {
       </div>
       <div class="info">
         <p>
-          Khách Hàng: <em style="font-weight: bold; font-size: 14px;">${order.TenKH || "N/A"}</em>
+          Khách Hàng: <em style="font-weight: bold; font-size: 14px;">${
+            order.TenKH || "N/A"
+          }</em>
         </p>
         <div style="display: flex;">
           <p style="width: 30%">MST: ${order.MST || "N/A"}</p>
           <p style="width: 70%">
-            (Liên hệ: <strong>${order.SdtLH ? order.TenKH : "N/A"}</strong> <u>Số ĐT</u>: ${order.SdtLH || "N/A"})
+            (Liên hệ: <strong>${
+              order.SdtLH ? order.TenKH : "N/A"
+            }</strong> <u>Số ĐT</u>: ${order.SdtLH || "N/A"})
           </p>
         </div>
         <p>
-          Email hóa đơn: <em style="margin-left: 10px;">${order.Emailhd || "N/A"}</em>
+          Email hóa đơn: <em style="margin-left: 10px;">${
+            order.Emailhd || "N/A"
+          }</em>
         </p>
         <p>
-          Email giao hàng: <em style="margin-left: 10px;">${order.Emailkh || "N/A"}</em>
+          Email giao hàng: <em style="margin-left: 10px;">${
+            order.Emailkh || "N/A"
+          }</em>
         </p>
         <p>
           Địa Chỉ Trụ Sở: <strong>${order.DCtruso || "N/A"}</strong>
@@ -3885,7 +3921,9 @@ async function renderDeliveryNote(order) {
           Địa Chỉ Giao Hàng: ${order.DcGiaohang || "N/A"}
         </p>
         <p>
-          Ghi chú: <em><strong>${order.GhiChu || "Không có ghi chú"}</strong></em>
+          Ghi chú: <em><strong>${
+            order.GhiChu || "Không có ghi chú"
+          }</strong></em>
         </p>
       </div>
       <table class="item-table">
@@ -3900,33 +3938,45 @@ async function renderDeliveryNote(order) {
           </tr>
         </thead>
         <tbody>
-          ${order.Xuatlist?.length
-            ? order.Xuatlist
-                .map(
+          ${
+            order.Xuatlist?.length
+              ? order.Xuatlist.map(
                   (item, index) => `
           <tr>
             <td>${index + 1}</td>
             <td>${item.TenHh ? item.TenHh.replace("\n", "<br />") : "N/A"}</td>
-            <td>${item.Dongia.toLocaleString("vi-VN", { minimumFractionDigits: 0 })}</td>
+            <td>${item.Dongia.toLocaleString("vi-VN", {
+              minimumFractionDigits: 0,
+            })}</td>
             <td>${item.SoLg}</td>
-            <td>${(item.Dongia * item.SoLg).toLocaleString("vi-VN", { minimumFractionDigits: 0 })}</td>
+            <td>${(item.Dongia * item.SoLg).toLocaleString("vi-VN", {
+              minimumFractionDigits: 0,
+            })}</td>
             <td>${item.VatXuat != null ? item.VatXuat + "%" : "0%"}</td>
           </tr>
           `
-                )
-                .join("")
-            : "<tr><td colspan='6'>Không có mặt hàng</td></tr>"}
+                ).join("")
+              : "<tr><td colspan='6'>Không có mặt hàng</td></tr>"
+          }
         </tbody>
       </table>
       <div class="total">
         <p>
-          Tổng SL: ${TongSL} — Tổng tiền thanh toán đã VAT: <strong>${TongThanhTien.toLocaleString("vi-VN", { minimumFractionDigits: 0 })} VNĐ</strong>
+          Tổng SL: ${TongSL} — Tổng tiền thanh toán đã VAT: <strong>${TongThanhTien.toLocaleString(
+    "vi-VN",
+    { minimumFractionDigits: 0 }
+  )} VNĐ</strong>
         </p>
       </div>
       <div class="note">
         <p><strong>Bằng chữ:</strong> ${totalAmountText}</p>
         <p>
-          (Trong đó tiền hàng là: <strong>${TienHang.toLocaleString("vi-VN", { minimumFractionDigits: 0 })} VNĐ</strong> và Thuế GTGT là: <strong>${TienVAT.toLocaleString("vi-VN", { minimumFractionDigits: 0 })} VNĐ</strong>)
+          (Trong đó tiền hàng là: <strong>${TienHang.toLocaleString("vi-VN", {
+            minimumFractionDigits: 0,
+          })} VNĐ</strong> và Thuế GTGT là: <strong>${TienVAT.toLocaleString(
+    "vi-VN",
+    { minimumFractionDigits: 0 }
+  )} VNĐ</strong>)
         </p>
         <div style="display: flex;">
           <p style="margin-right: 40%;"><strong>Ngày Hẹn Thanh Toán:</strong></p>
@@ -4770,7 +4820,7 @@ async function main(page = 1, io) {
     try {
       const response = await retry(() => axios.get(`${API_2}`));
       const pendingExportOrders = response.data || [];
-      pendingExportCount = pendingExportOrders.filter(o => o.MaPX).length;
+      pendingExportCount = pendingExportOrders.filter((o) => o.MaPX).length;
       console.log(`[main] Tổng phiếu chờ xuất hàng: ${pendingExportCount}`);
     } catch (err) {
       console.error("[main] Lỗi khi lấy phiếu chờ xuất:", err.message);
@@ -4906,7 +4956,9 @@ async function main(page = 1, io) {
     );
 
     // Bước 10: Lấy danh sách đơn quá hạn và tổng phiếu chờ xuất
-    console.log("📢 Bước 10: Lấy danh sách đơn quá hạn và tổng phiếu chờ xuất...");
+    console.log(
+      "📢 Bước 10: Lấy danh sách đơn quá hạn và tổng phiếu chờ xuất..."
+    );
     const overdueConnection = await createConnectionWithRetry();
     const [overdueOrders] = await overdueConnection.query(
       `
@@ -5026,17 +5078,22 @@ app.get("/grouped-orders2", async (req, res) => {
     try {
       const response = await retry(() => axios.get(`${API_2}`));
       const pendingExportOrders = response.data || [];
-      pendingExportCount = pendingExportOrders.filter(o => o.MaPX).length;
-      console.log(`[/grouped-orders2] Tổng phiếu chờ xuất hàng: ${pendingExportCount}`);
+      pendingExportCount = pendingExportOrders.filter((o) => o.MaPX).length;
+      console.log(
+        `[/grouped-orders2] Tổng phiếu chờ xuất hàng: ${pendingExportCount}`
+      );
     } catch (err) {
-      console.error("[/grouped-orders2] Lỗi khi lấy phiếu chờ xuất:", err.message);
+      console.error(
+        "[/grouped-orders2] Lỗi khi lấy phiếu chờ xuất:",
+        err.message
+      );
       pendingExportCount = 0; // Đảm bảo giá trị mặc định nếu lỗi
     }
 
     console.timeEnd("grouped-orders2");
     res.status(200).json({
       ...groupedOrders,
-      pendingExportCount // Thêm tổng phiếu chờ xuất vào phản hồi
+      pendingExportCount, // Thêm tổng phiếu chờ xuất vào phản hồi
     });
   } catch (error) {
     console.error("Lỗi trong /grouped-orders2:", error.message, error.stack);
@@ -5551,18 +5608,27 @@ app.get("/orders/details/:id", async (req, res) => {
   const { id } = req.params;
 
   if (!id || !id.trim()) {
-    return res.status(400).json({ error: "Thiếu mã đơn hàng để lấy chi tiết." });
+    return res
+      .status(400)
+      .json({ error: "Thiếu mã đơn hàng để lấy chi tiết." });
   }
 
   try {
     const order = await fetchOrderDetails(id);
     if (!order) {
-      return res.status(404).json({ error: "Không tìm thấy đơn hàng với mã này." });
+      return res
+        .status(404)
+        .json({ error: "Không tìm thấy đơn hàng với mã này." });
     }
     res.status(200).json({ order });
   } catch (err) {
     console.error(`Lỗi khi lấy chi tiết đơn hàng ${id}:`, err.message);
-    res.status(500).json({ error: "Lỗi server khi lấy chi tiết đơn hàng.", details: err.message });
+    res
+      .status(500)
+      .json({
+        error: "Lỗi server khi lấy chi tiết đơn hàng.",
+        details: err.message,
+      });
   }
 });
 
@@ -5573,14 +5639,18 @@ app.get("/delivery-note/:maPX", async (req, res) => {
   try {
     // Kiểm tra maPX hợp lệ
     if (!maPX || typeof maPX !== "string" || maPX.trim() === "") {
-      return res.status(400).json({ error: "Mã phiếu xuất (MaPX) không hợp lệ" });
+      return res
+        .status(400)
+        .json({ error: "Mã phiếu xuất (MaPX) không hợp lệ" });
     }
 
     // Lấy chi tiết đơn hàng từ API
     const orders = await fetchOrderDetailsFromAPIs(maPX.trim());
 
     if (!orders.length) {
-      return res.status(404).json({ error: `Không tìm thấy đơn hàng với MaPX: ${maPX}` });
+      return res
+        .status(404)
+        .json({ error: `Không tìm thấy đơn hàng với MaPX: ${maPX}` });
     }
 
     const order = orders[0]; // Lấy đơn hàng đầu tiên
@@ -5592,7 +5662,11 @@ app.get("/delivery-note/:maPX", async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     res.status(200).send(html);
   } catch (error) {
-    console.error(`Lỗi khi tạo biên bản giao hàng cho MaPX ${maPX}:`, error.message, error.stack);
+    console.error(
+      `Lỗi khi tạo biên bản giao hàng cho MaPX ${maPX}:`,
+      error.message,
+      error.stack
+    );
     res.status(500).json({
       error: "Lỗi server khi tạo biên bản giao hàng",
       details: error.message,
