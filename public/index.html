@@ -270,6 +270,9 @@
       .view-static-btn:hover {
         background-color: #0056b3;
       }
+      .order_details {
+        color: #000000;
+      }
     </style>
   </head>
 
@@ -822,21 +825,22 @@
         const table = document.createElement("table");
         table.className = "table table-bordered";
         table.innerHTML = `
-        <thead>
-          <tr>
-            <th>MÃ ĐƠN</th>
-            <th>ĐỊA CHỈ GIAO HÀNG <br> ĐỊA CHỈ HÓA ĐƠN</th>
-            <th>KHOẢNG CÁCH QUY ĐỊNH <br>(km)</th>
-            <th>KHOẢNG CÁCH THỰC <br>(km)</th>
-            <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
-            <th>ĐỘ ƯU TIÊN</th>
-            <th>THỜI GIAN XUẤT KHO</th>
-            <th>GIAO THEO YÊU CẦU</th>
-            <th>GHI CHÚ KHÁCH HÀNG</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      `;
+    <thead>
+      <tr>
+        <th>MÃ ĐƠN</th>
+        <th>ĐỊA CHỈ GIAO HÀNG <br> ĐỊA CHỈ HÓA ĐƠN</th>
+        <th>MÃ KHÁCH HÀNG</th>
+        <th>KHOẢNG CÁCH QUY ĐỊNH <br>(km)</th>
+        <th>KHOẢNG CÁCH THỰC <br>(km)</th>
+        <th>THỜI GIAN DI CHUYỂN <br>(phút)</th>
+        <th>ĐỘ ƯU TIÊN</th>
+        <th>THỜI GIAN XUẤT KHO</th>
+        <th>GIAO THEO YÊU CẦU</th>
+        <th>GHI CHÚ KHÁCH HÀNG</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
         const tbody = table.querySelector("tbody");
 
         orders.forEach((o) => {
@@ -859,12 +863,19 @@
           const row = document.createElement("tr");
 
           const cells = [
-            { text: o.id_order, class: priorityClass },
+            {
+              html: `<a class="order_details" href="/delivery-note/${o.id_order}" target="_blank">${o.id_order}</a>`,
+              class: priorityClass,
+            },
             {
               text: `ĐCGH: ${o.address || "N/A"}\nĐCHĐ:${
                 o.current_address || "N/A"
               }`,
               class: `${priorityClass} cell`,
+            },
+            {
+              text: o.MaKH || "N/A",
+              class: priorityClass,
             },
             {
               text:
@@ -899,7 +910,11 @@
 
           cells.forEach((cell) => {
             const td = document.createElement("td");
-            td.textContent = cell.text;
+            if (cell.html) {
+              td.innerHTML = cell.html;
+            } else {
+              td.textContent = cell.text;
+            }
             td.className = cell.class;
             row.appendChild(td);
           });

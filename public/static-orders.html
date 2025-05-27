@@ -58,31 +58,74 @@
         background-color: #0056b3;
       }
       .order-details {
-        font-size: 15px;
+        font-size: 10px;
         line-height: 1.6;
+        overflow-x: auto;
+        max-width: 100%;
       }
       .order-details table {
         width: 100%;
         border-collapse: collapse;
+        table-layout: fixed;
       }
       .order-details th,
       .order-details td {
-        padding: 5px 10px;
-        vertical-align: top;
-        text-align: left;
-        border-bottom: 1px solid #ddd;
+        padding: 6px;
+        vertical-align: middle;
+        text-align: center;
+        border: 1px solid #ddd;
+        white-space: nowrap;
+        font-size: 10px;
       }
       .order-details th {
         font-weight: bold;
         color: #4caf50;
-        width: 50%;
-      }
-      .order-details td {
-        width: 50%;
+        background-color: #f8f9fa;
       }
       .order-details .red-text {
         color: red !important;
         font-weight: bold;
+      }
+      .order-details .address-cell {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 200px;
+        white-space: normal;
+        line-height: 1.4;
+      }
+      .order-details td:has(.address-cell) {
+        white-space: normal;
+        overflow: hidden;
+        max-width: 200px;
+      }
+      .order-details .short-cell {
+        max-width: 80px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .order-details td:has(.short-cell) {
+        max-width: 40px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .order-details .note {
+        width: 50px;
+        max-width: 50px;
+        display: inline-block;
+        text-overflow: ellipsis;
+        overflow: hidden;
+        white-space: nowrap;
+        word-break: break-all;
+      }
+      .order-details td:has(.note) {
+        white-space: nowrap;
+        overflow: hidden;
+        width: 50px;
+        max-width: 50px;
       }
       .stats-container {
         display: flex;
@@ -106,6 +149,7 @@
       }
       .stats-container .stats {
         display: flex;
+        align-items: center;
         gap: 20px;
         background-color: #ffffff;
         padding: 10px 20px;
@@ -133,6 +177,24 @@
         font-size: 16px;
         color: #b71c1c;
       }
+      .stats-container .pending-export-count {
+        color: #0288d1;
+      }
+      .stats-container .pending-export-count strong {
+        font-size: 16px;
+        color: #01579b;
+      }
+      .countdown-timer {
+        font-size: 15px;
+        font-weight: 600;
+        color: #4caf50;
+      }
+      .countdown-timer.warning {
+        color: #ff9800;
+      }
+      .countdown-timer.critical {
+        color: #f44336;
+      }
       #loading {
         display: none;
       }
@@ -151,11 +213,48 @@
         transition: opacity 0.15s ease, transform 0.15s ease;
         transform: translateY(-10px);
         opacity: 0;
+        max-width: calc(100% - 40px);
+        width: 100%;
       }
       .modal.show .modal-dialog {
         transform: translateY(0);
         margin-top: 3%;
         opacity: 1;
+      }
+      @media (max-width: 768px) {
+        .modal-dialog {
+          max-width: 100%;
+          margin: 0 10px;
+        }
+        .order-details .note {
+          width: 70px;
+          max-width: 70px;
+        }
+        .order-details td:has(.note) {
+          width: 70px;
+          max-width: 70px;
+        }
+        .order-details .address-cell {
+          max-width: 150px;
+        }
+        .order-details td:has(.address-cell) {
+          max-width: 150px;
+        }
+        .order-details .short-cell {
+          max-width: 60px;
+        }
+        .order-details td:has(.short-cell) {
+          max-width: 60px;
+        }
+        .stats-container .stats {
+          flex-wrap: wrap;
+          gap: 10px;
+          font-size: 14px;
+        }
+        .countdown-timer,
+        .pending-export-count {
+          font-size: 14px;
+        }
       }
     </style>
   </head>
@@ -186,19 +285,8 @@
         data-bs-focus="false"
         aria-hidden="true"
       >
-        <div class="modal-dialog modal-lg">
+        <div class="modal-dialog modal-xl">
           <div class="modal-content">
-            <div class="modal-header">
-              <h5 class="modal-title" id="orderDetailModalLabel">
-                Chi Tiết Đơn Hàng
-              </h5>
-              <button
-                type="button"
-                class="btn-close"
-                data-bs-dismiss="modal"
-                aria-label="Close"
-              ></button>
-            </div>
             <div class="modal-body">
               <div id="order-details-content" class="order-details"></div>
             </div>
@@ -210,8 +298,10 @@
     <script>
       let totalOrders = 0;
       let overdueCount = 0;
+      let pendingExportCount = 0;
       let updateInterval = null;
       let timeout = null;
+      let countdownInterval = null;
 
       // Kết nối với Socket.IO
       const socket = io();
@@ -227,6 +317,41 @@
           .show();
       });
 
+      // Hàm khởi động countdown timer
+      function startCountdownTimer(nextRunTime) {
+        if (countdownInterval) {
+          clearInterval(countdownInterval);
+        }
+        const countdownElement = document.getElementById("countdown-timer");
+        countdownInterval = setInterval(() => {
+          const now = moment().tz("Asia/Ho_Chi_Minh");
+          const nextRun = moment(nextRunTime).tz("Asia/Ho_Chi_Minh");
+          const secondsLeft = nextRun.diff(now, "seconds");
+
+          if (secondsLeft <= 0) {
+            countdownElement.textContent =
+              "Đang cập nhật danh sách đơn hàng...";
+            countdownElement.className = "countdown-timer";
+            nextRunTime = moment(nextRun)
+              .add(5, "minutes")
+              .startOf("minute")
+              .format("YYYY-MM-DD HH:mm:ss");
+            return;
+          }
+
+          const minutes = Math.floor(secondsLeft / 60);
+          const seconds = secondsLeft % 60;
+          countdownElement.textContent = `Cập nhật sau: ${minutes}m ${seconds}s`;
+
+          countdownElement.className = "countdown-timer";
+          if (secondsLeft <= 60) {
+            countdownElement.className = "countdown-timer critical";
+          } else if (secondsLeft <= 120) {
+            countdownElement.className = "countdown-timer warning";
+          }
+        }, 1000);
+      }
+
       // Lắng nghe sự kiện ordersUpdated từ server
       socket.on("ordersUpdated", (payload) => {
         console.log("Nhận sự kiện ordersUpdated:", payload);
@@ -234,6 +359,7 @@
         if (data2 && data2.orders) {
           totalOrders = payload.totalOrders || 0;
           overdueCount = payload.overdueCount || 0;
+          pendingExportCount = payload.pendingExportCount || 0;
           renderOrders(data2.orders);
           renderStats();
           $("#loading").removeClass("show");
@@ -243,6 +369,9 @@
           );
         } else {
           console.log("Bỏ qua cập nhật: Không có dữ liệu đơn hàng");
+        }
+        if (payload.nextRunTime) {
+          startCountdownTimer(payload.nextRunTime);
         }
       });
 
@@ -264,6 +393,7 @@
 
           totalOrders = data.totalOrders || 0;
           overdueCount = data.overdueCount || 0;
+          pendingExportCount = data.pendingExportCount || 0;
           const orders = data.orders || [];
           renderOrders(orders);
           renderStats();
@@ -350,50 +480,29 @@
       }
 
       function showOrderDetails(o) {
-        const now = moment().tz("Asia/Ho_Chi_Minh");
         let priorityText = "Bình thường";
         if (o.priority === 2) priorityText = "Khẩn cấp";
         else if (o.priority === 1) priorityText = "Ưu tiên cao";
-
-        const statusText = o.status === 1 ? "Ưu tiên" : "Bình thường";
-        const oldDistanceText =
-          o.old_distance !== null ? o.old_distance.toFixed(2) + " km" : "N/A";
-        const oldTravelTimeText =
-          o.old_travel_time !== null ? o.old_travel_time + " phút" : "N/A";
-        const createdAt = o.created_at
-          ? moment(o.created_at).tz("Asia/Ho_Chi_Minh")
-          : null;
-
-        function formatTimeDifference(start, end) {
-          const duration = moment.duration(end.diff(start));
-          const days = Math.floor(duration.asDays());
-          const hours = Math.floor(duration.asHours() % 24);
-          const minutes = Math.floor(duration.asMinutes() % 60);
-          let parts = [];
-          if (days > 0) parts.push(`${days} ngày`);
-          if (hours > 0) parts.push(`${hours} giờ`);
-          if (minutes > 0 || (days === 0 && hours === 0))
-            parts.push(`${minutes} phút`);
-          return parts.join(" ");
-        }
 
         const fields = [
           { label: "Mã Đơn Hàng", text: o.id_order || "N/A" },
           {
             label: "Tổng Sản Phẩm Giao",
             text: o.SoLuongHangHoa !== null ? o.SoLuongHangHoa : "0",
-            class: "red-text",
+            class: "red-text short-cell",
           },
-          { label: "Độ Ưu Tiên", text: priorityText },
+          { label: "Độ Ưu Tiên", text: priorityText, class: "short-cell" },
           {
             label: "Địa Chỉ Giao Hàng",
             text: o.address || "N/A",
-            class: "cell",
+            class: "address-cell",
+            title: o.address || "N/A",
           },
           {
             label: "Địa Chỉ Hóa Đơn",
             text: o.current_address || "N/A",
-            class: "cell",
+            class: "address-cell",
+            title: o.current_address || "N/A",
           },
           {
             label: "Khoảng Cách Quy Định",
@@ -401,90 +510,48 @@
               o.SOKM !== null && !isNaN(o.SOKM)
                 ? o.SOKM.toFixed(2) + " km"
                 : "N/A",
-            class: "red-text",
+            class: "red-text short-cell",
           },
           {
             label: "Khoảng Cách Thực",
             text: o.distance !== null ? o.distance.toFixed(2) + " km" : "N/A",
-            class: "red-text",
+            class: "red-text short-cell",
           },
           {
-            label: "Thời Gian Giao",
+            label: "Thời gian Giao",
             text: o.travel_time !== null ? o.travel_time + " phút" : "N/A",
           },
-          {
-            label: "Địa Chỉ Trước Thay Đổi",
-            text: o.old_address || "N/A",
-            class: "cell",
-          },
-          { label: "Khoảng Cách Sau Thay Đổi Địa Chỉ", text: oldDistanceText },
-          {
-            label: "Thời Gian Giao Sau Thay Đổi Địa Chỉ",
-            text: oldTravelTimeText,
-          },
           { label: "Ngày Xuất Kho", text: o.date_delivery || "N/A" },
-          { label: "Ghi Chú Khách Hàng", text: o.delivery_note || "N/A" },
           {
-            label: "Thời Gian Phải Hoàn Thành",
-            text: o.delivery_deadline || "N/A",
-          },
-          {
-            label: "Ngày Xuất Phiếu",
-            text: o.created_at
-              ? moment(o.created_at)
-                  .tz("Asia/Ho_Chi_Minh")
-                  .format("DD/MM/YYYY HH:mm:ss")
-              : "N/A",
-          },
-          { label: "Quận/Huyện", text: o.district || "N/A" },
-          { label: "Phường/Xã", text: o.ward || "N/A" },
-          { label: "Trạng Thái", text: statusText },
-          {
-            label: "Được Tạo Cách Đây",
-            text: `<span id="created-since-${o.id_order}">${
-              createdAt
-                ? formatTimeDifference(
-                    createdAt,
-                    moment().tz("Asia/Ho_Chi_Minh")
-                  )
-                : "N/A"
-            }</span>`,
-            class: "",
+            label: "Ghi Chú",
+            text: o.delivery_note || "N/A",
+            class: "note",
+            title: o.delivery_note || "",
           },
         ];
 
         const details = document.getElementById("order-details-content");
         details.innerHTML = `
-        <table>
-          <tbody>
-            ${fields
-              .map(
-                (field) => `
+          <table>
+            <thead>
               <tr>
-                <th>${field.label}</th>
-                <td><span class="${field.class || ""}">${field.text}</span></td>
+                ${fields.map((field) => `<th>${field.label}</th>`).join("")}
               </tr>
-            `
-              )
-              .join("")}
-          </tbody>
-        </table>
-      `;
-
-        if (createdAt) {
-          if (updateInterval) clearInterval(updateInterval);
-          updateInterval = setInterval(() => {
-            const span = document.getElementById(`created-since-${o.id_order}`);
-            if (span) {
-              span.textContent = formatTimeDifference(
-                createdAt,
-                moment().tz("Asia/Ho_Chi_Minh")
-              );
-            } else {
-              clearInterval(updateInterval);
-            }
-          }, 1000);
-        }
+            </thead>
+            <tbody>
+              <tr>
+                ${fields
+                  .map(
+                    (field) =>
+                      `<td><span class="${field.class || ""}" title="${
+                        field.title || field.text
+                      }">${field.text}</span></td>`
+                  )
+                  .join("")}
+              </tr>
+            </tbody>
+          </table>
+        `;
       }
 
       function renderStats() {
@@ -495,9 +562,11 @@
         const statsDiv = document.createElement("div");
         statsDiv.className = "stats";
         statsDiv.innerHTML = `
-        <span class="pending-count">Tổng đơn chờ giao: <strong>${totalOrders}</strong></span>
-        <span class="overdue-count">Tổng đơn quá 15 phút: <strong>${overdueCount}</strong></span>
-      `;
+          <span class="pending-count">Tổng đơn chờ giao: <strong>${totalOrders}</strong></span>
+          <span class="overdue-count">Tổng đơn quá 15 phút: <strong>${overdueCount}</strong></span>
+          <span class="pending-export-count">Tổng phiếu chờ xuất: <strong>${pendingExportCount}</strong></span>
+          <span class="countdown-timer" id="countdown-timer">Cập nhật sau: 5m 0s</span>
+        `;
         container.appendChild(statsDiv);
       }
 

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Biên Bản Giao Hàng</title>
+    <style>
+      @page {
+        size: A5 portrait;
+        margin: 10mm;
+      }
+      body {
+        font-family: Arial, sans-serif;
+        font-size: 8pt;
+        margin: 0;
+        padding: 0;
+      }
+      .a5-page {
+        width: 128mm;
+        height: 190mm;
+        margin: 0 auto;
+        box-sizing: border-box;
+        border: 1px dashed #000;
+        padding: 5mm;
+        position: relative;
+        margin-top: 10mm;
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .header-center {
+        text-align: center;
+        flex: 1;
+      }
+      .barcode-inline {
+        margin-top: 5mm;
+      }
+      .barcode-footer img {
+        height: 30px;
+      }
+      .barcode-inline img {
+        height: 30px;
+      }
+      .barcode-footer {
+        display: flex;
+        justify-content: center;
+        margin-bottom: 4px;
+      }
+      .title {
+        font-size: 13pt;
+        font-weight: bold;
+        text-decoration: underline;
+      }
+      .subtitle {
+        margin-top: -5px;
+        font-style: italic;
+      }
+      .barcode {
+        font-family: "Courier New", monospace;
+        font-size: 10.5pt;
+        margin-top: 3px;
+      }
+      .code {
+        font-size: 8.5pt;
+        font-weight: bold;
+      }
+      .info p,
+      .note p {
+        margin: 1px 0;
+      }
+      .item-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 4px;
+        font-size: 8pt;
+      }
+      .item-table th,
+      .item-table td {
+        border: 1px solid #000;
+        padding: 2px;
+        text-align: left;
+      }
+      .item-table th {
+        background: #f0f0f0;
+      }
+      .total {
+        margin-top: 4px;
+        font-weight: bold;
+      }
+      .note {
+        font-size: 8.5pt;
+        margin-top: 6px;
+      }
+      .footer {
+        margin-top: 40px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .signature {
+        width: 32%;
+        text-align: center;
+        font-size: 8.5pt;
+      }
+      .author {
+        margin-top: 6px;
+        text-align: center;
+        font-weight: bold;
+        font-size: 9pt;
+      }
+      .bold {
+        font-weight: bold;
+      }
+      .italic {
+        font-style: italic;
+      }
+      .underline {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="a5-page">
+      <p style="text-align: end; border-bottom: #000 dotted thin; margin-bottom: 5mm;">chinhnhan.vn Tel: 1900571200</p>
+      <div class="header">
+        <div class="header-center" style="width: 100%;">
+          <p
+            class="title"
+            style="font-size: 24px; margin-top: -15px; margin-left: -30px"
+          >
+            BIÊN BẢN GIAO HÀNG
+          </p>
+          <p class="subtitle" style="margin-top: -20px; margin-left: -30px">
+            (Xuất bán hàng)
+          </p>
+        </div>
+        <div class="barcode-inline" style="margin-top: -10px; width: 40%;">
+          <img
+            src="https://api-bwipjs.metafloor.com/?bcid=code128&text=X250526012-C&scale=1&height=10"
+            alt="barcode-top"
+            style="width: 155px"
+          />
+          <p class="barcode" style="text-align: center">X250526012-C</p>
+          <p class="code" style="text-align: center; margin-top: -10px; display: flex; flex-wrap: wrap;">
+            Q01_MY_NGUYEN_CKT003Q01
+          </p>
+        </div>
+      </div>
+
+      <div class="info">
+        <p>
+          Khách Hàng:
+          <em style="font-weight: bold; font-size: 14px">NGUYỄN MY</em>
+        </p>
+        <div style="display: flex">
+          <p style="width: 30%">MST: 0002837264</p>
+          <p style="width: 70%;">
+            (Liên hệ: <strong>MS MYMSMS MYMMS MYMMS MYMMS MYMMS MYMMS MYMMS MYM</strong> <u>Số ĐT</u>: 0938467499)
+          </p>
+        </div>
+        <p>
+          Email hóa đơn:
+          <em style="margin-left: 10px">cmservicekdsr@gmail.com</em>
+        </p>
+        <p>
+          Email giao hàng:
+          <em style="margin-left: 10px">cmservicekdsr@gmail.com</em>
+        </p>
+        <p>
+          Địa Chỉ Trụ Sở:
+          <strong
+            >85 NGUYỄN PHI KHANH, P.TÂN ĐỊNH, QUẬN 1, TP HỒ CHÍ MINH</strong
+          >
+        </p>
+        <p>
+          Địa Chỉ Giao Hàng:
+          <strong
+            >85 NGUYỄN PHI KHANH, P.TÂN ĐỊNH, QUẬN 1, TP HỒ CHÍ MINH</strong
+          >
+        </p>
+        <p>
+          <strong>Ghi chú:</strong> Đã bán hàng tại SR, kho không ra hàng, không
+          in phiếu
+        </p>
+      </div>
+
+      <table class="item-table">
+        <thead>
+          <tr>
+            <th>Stt</th>
+            <th>Tên Mặt Hàng</th>
+            <th>Đơn giá</th>
+            <th>SL</th>
+            <th>Thành tiền</th>
+            <th>VAT</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>CHUỘT MÁY TÍNH KHÔNG DÂY NEWMEN<br />F368</td>
+            <td>127,272.73</td>
+            <td>1</td>
+            <td>127,273</td>
+            <td>10%</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>CHUỘT MÁY TÍNH KHÔNG DÂY NEWMEN<br />F368</td>
+            <td>127,272.73</td>
+            <td>1</td>
+            <td>127,273</td>
+            <td>10%</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>CHUỘT MÁY TÍNH KHÔNG DÂY NEWMEN<br />F368</td>
+            <td>127,272.73</td>
+            <td>1</td>
+            <td>127,273</td>
+            <td>10%</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>CHUỘT MÁY TÍNH KHÔNG DÂY NEWMEN<br />F368</td>
+            <td>127,272.73</td>
+            <td>1</td>
+            <td>127,273</td>
+            <td>10%</td>
+          </tr>
+          <tr>
+            <td>1</td>
+            <td>CHUỘT MÁY TÍNH KHÔNG DÂY NEWMEN<br />F368</td>
+            <td>127,272.73</td>
+            <td>1</td>
+            <td>127,273</td>
+            <td>10%</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="total">
+        <p>
+          Tổng SL: 1 — Tổng tiền thanh toán đã VAT: <strong>140,000</strong>
+        </p>
+      </div>
+
+      <div class="note">
+        <p><strong>Bằng chữ:</strong> Bốn trăm bốn mươi nghìn đồng</p>
+        <p>
+          (Trong đó tiền hàng là: <strong>127,273 VNĐ</strong> và Thuế GTGT là:
+          <strong>12,727 VNĐ</strong>)
+        </p>
+        <div style="display: flex">
+          <p style="margin-right: 40%"><strong>Ngày Hẹn Thanh Toán:</strong></p>
+          <p>Kèm HĐTC số:</p>
+        </div>
+        <p>
+          <em
+            >Đề nghị Quý Khách kiểm tra số lượng và tình trạng hàng hóa. Khi Quý
+            Khách ký nhận, mọi mất mát hoặc gãy vỡ (nếu có) sẽ
+            <strong style="text-decoration: underline; font-size: 9pt;">không</strong> được giải quyết và hàng hóa sẽ được bảo hành
+            theo đúng quy định của nhà sản xuất.
+            <strong
+              >Khi Quý Khách đồng ý ký nhận, HĐTC sẽ được giao.</strong
+            ></em
+          >
+        </p>
+        <p>
+          <em><strong>Khi Quý Khách thanh toán bằng chuyển khoản, vui lòng gui rõ nội dung trên lệnh chuyển tiền(UNC):</strong> <strong style="margin-left: 10px;">"NGUYEN TT HD SO"</strong></em>
+        </p>
+        <p>Tham chiếu:</p>
+      </div>
+
+      <img
+        src="https://api-bwipjs.metafloor.com/?bcid=code128&text=Q01MYNGUYENCKT003&scale=1&height=10"
+        alt="barcode-footer"
+        style="width: 155px; height: 30px; float: right"
+      />
+      <div class="footer">
+        <div class="signature">
+          <p><strong>Người Nhận</strong></p>
+          <p>(Ký & ghi rõ họ tên)</p>
+        </div>
+        <div class="signature">
+          <p><strong>Người Giao</strong></p>
+        </div>
+        <div class="signature">
+          <div class="barcode-footer"></div>
+          <p>Ngày 26 tháng 5 năm 2025</p>
+          <p><strong>Người Xuất Phiếu</strong></p>
+          <p>(Ký & ghi rõ họ tên)</p>
+          <div class="author">HUỲNH THUẬN AN</div>
+        </div>
+      </div>
+
+    </div>
+  </body>
+</html>
