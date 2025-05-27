@@ -3668,12 +3668,6 @@ async function generateBarcode(text) {
 
 // RENDER BIÊN BẢN GIAO HÀNG
 async function renderDeliveryNote(order) {
-  // Chuyển số thành chữ tiếng Việt
-  const config = new ReadingConfig();
-  config.unit = ["đồng"];
-  const totalAmountText = order.TongTien != null && !isNaN(order.TongTien)
-    ? doReadNumber(config, Math.round(order.TongTien).toString())
-    : "Không xác định";
 
   // Tạo barcode
   const barcodeTop = await generateBarcode(order.MaPX || "N/A");
@@ -3717,7 +3711,12 @@ async function renderDeliveryNote(order) {
     });
   }
   let TongThanhTien = TienHang + TienVAT;
-
+  // Chuyển số thành chữ tiếng Việt
+  const config = new ReadingConfig();
+  config.unit = ["đồng"];
+  const totalAmountText = TongThanhTien != null && !isNaN(TongThanhTien)
+    ? doReadNumber(config, Math.round(TongThanhTien).toString())
+    : "Không xác định";
   // Tạo HTML
   return `
 <!DOCTYPE html>
