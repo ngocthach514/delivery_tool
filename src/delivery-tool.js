@@ -2629,7 +2629,8 @@ async function groupOrders(page = 1, filterDate = null, pageSize = 10) {
         o.address AS current_address,
         o.old_address,
         o.SoLuongHangHoa,
-        o.MaKH, -- Thêm MaKH
+        o.DiachiTruSo,
+        o.MaKH,
         CASE 
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -2681,6 +2682,7 @@ async function groupOrders(page = 1, filterDate = null, pageSize = 10) {
       delivery_note: row.delivery_note,
       current_address: row.current_address,
       old_address: row.old_address,
+      DiachiTruSo: row.DiachiTruSo,
       SoLuongHangHoa:
         row.SoLuongHangHoa !== null ? parseInt(row.SoLuongHangHoa) : 0,
       MaKH: row.MaKH || "N/A", // Thêm MaKH vào parsedResults
@@ -3106,6 +3108,7 @@ async function groupOrders2(filterDate = null) {
     const [results] = await connection.execute(query, queryParams);
     await connection.end();
 
+    const nextRunTime = getNextCronRunTime();
     const parsedResults = results.map((row) => ({
       id_order: row.id_order,
       address: row.address || "N/A",
@@ -3429,6 +3432,7 @@ async function groupOrders2(filterDate = null) {
       overdueCount,
       orders: sortedResults,
       lastRun: moment().tz("Asia/Ho_Chi_Minh").format(),
+      nextRunTime
     };
   } catch (error) {
     console.error("Lỗi trong groupOrders2:", error.message, error.stack);
@@ -5121,24 +5125,44 @@ app.get("/process-orders", async (req, res) => {
 
 // LẤY DANH SÁCH QUẬN VÀ PHƯỜNG
 app.get("/locations", async (req, res) => {
-  const connection = await mysql.createConnection(dbConfig);
-  const [rows] = await connection.query(`
-    SELECT DISTINCT district, ward
-    FROM orders_address
-    WHERE district IS NOT NULL AND ward IS NOT NULL
-  `);
+  let connection = null;
+  try {
+    connection = await createConnectionWithRetry();
+    const [rows] = await connection.query(`
+      SELECT DISTINCT oa.district, oa.ward
+      FROM orders_address oa
+      JOIN orders o ON oa.id_order = o.id_order
+      WHERE oa.district IS NOT NULL 
+        AND oa.ward IS NOT NULL
+        AND oa.district != ''
+        AND oa.ward != ''
+        AND o.status = 'Chờ xác nhận giao/lấy hàng'
+    `);
 
-  const districts = [...new Set(rows.map((r) => r.district.trim()))];
-  const wards = [...new Set(rows.map((r) => r.ward.trim()))];
+    const districts = [...new Set(rows.map((r) => r.district.trim()))].filter(Boolean);
+    const wards = [...new Set(rows.map((r) => r.ward.trim()))].filter(Boolean);
 
-  res.json({
-    districts,
-    wards,
-    mapping: rows.map((r) => ({
-      district: r.district.trim(),
-      ward: r.ward.trim(),
-    })),
-  });
+    res.json({
+      districts,
+      wards,
+      mapping: rows.map((r) => ({
+        district: r.district.trim(),
+        ward: r.ward.trim(),
+      })),
+    });
+  } catch (error) {
+    console.error("Lỗi trong /locations:", error.message, error.stack);
+    res.status(500).json({ error: "Lỗi server", details: error.message });
+  } finally {
+    if (connection) {
+      try {
+        await connection.end();
+        console.log("[DEBUG] Đã đóng kết nối cơ sở dữ liệu trong /locations");
+      } catch (err) {
+        console.error("Lỗi khi đóng kết nối:", err.message);
+      }
+    }
+  }
 });
 
 // TÌM KIẾM ĐƠN HÀNG
@@ -5173,7 +5197,7 @@ app.get("/orders/search", async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT o.*,o.address AS current_address, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE ${field} = ?
@@ -5212,7 +5236,7 @@ app.get("/orders/filter", async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT o.*,o.address AS current_address, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE ${dateCondition}
@@ -5278,7 +5302,7 @@ app.get("/orders/filter-advanced", async (req, res) => {
     const [rows] = await connection.query(
       `
       SELECT 
-        o.*, 
+        o.*, o.address AS current_address,
         a.address, a.district, a.ward, 
         a.distance, a.travel_time, 
         a.created_at AS address_created_at,
@@ -5359,6 +5383,7 @@ app.get("/orders/filter-by-date", async (req, res) => {
         o.priority,
         o.delivery_deadline,
         o.delivery_note,
+        o.address AS current_address,
         CASE 
           WHEN DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(CONVERT_TZ(o.created_at, '+00:00', '+07:00')) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -5437,6 +5462,7 @@ app.get("/orders/filter-by-date", async (req, res) => {
       district: row.district || null,
       ward: row.ward || null,
       days_old: row.days_old,
+      current_address: row.current_address,
     }));
 
     await connection.end();
@@ -5480,7 +5506,7 @@ app.get("/orders/search-by-id", async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT o.*, o.address AS current_address, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE o.id_order LIKE ?
@@ -5549,7 +5575,7 @@ app.get("/orders/find-by-id", async (req, res) => {
 
     const [rows] = await connection.query(
       `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT o.*,o.address AS current_address, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE o.id_order = ?
@@ -5580,7 +5606,7 @@ app.get("/orders/overdue-list", async (req, res) => {
     const connection = await createConnectionWithRetry();
     const date = req.query.date || null;
     let query = `
-      SELECT o.*, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
+      SELECT o.*,o.address AS current_address, a.address, a.district, a.ward, a.distance, a.travel_time, a.status AS address_status
       FROM orders o
       LEFT JOIN orders_address a ON o.id_order = a.id_order
       WHERE a.status = 1

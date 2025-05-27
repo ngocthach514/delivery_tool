@@ -397,6 +397,21 @@
           const orders = data.orders || [];
           renderOrders(orders);
           renderStats();
+
+          // Khởi động countdown timer nếu có nextRunTime
+          if (data.nextRunTime) {
+            startCountdownTimer(data.nextRunTime);
+          } else {
+            console.warn(
+              "Không nhận được nextRunTime từ /grouped-orders2, sử dụng giá trị mặc định"
+            );
+            const defaultNextRun = moment()
+              .tz("Asia/Ho_Chi_Minh")
+              .add(5, "minutes")
+              .startOf("minute")
+              .format("YYYY-MM-DD HH:mm:ss");
+            startCountdownTimer(defaultNextRun);
+          }
         } catch (err) {
           console.error("Lỗi trong fetchOrders:", err.message);
           $("#error")
@@ -408,6 +423,29 @@
           $("#loading").removeClass("show");
         }
       }
+
+      // Lắng nghe sự kiện ordersUpdated từ server
+      socket.on("ordersUpdated", (payload) => {
+        console.log("Nhận sự kiện ordersUpdated:", payload);
+        const data2 = payload.data2; // Dữ liệu từ groupOrders2
+        if (data2 && data2.orders) {
+          totalOrders = payload.totalOrders || 0;
+          overdueCount = payload.overdueCount || 0;
+          pendingExportCount = payload.pendingExportCount || 0;
+          renderOrders(data2.orders);
+          renderStats();
+          $("#loading").removeClass("show");
+          $("#error").hide();
+          console.log(
+            `Đã cập nhật ${data2.orders.length} đơn hàng từ groupOrders2 qua Socket.IO`
+          );
+        } else {
+          console.log("Bỏ qua cập nhật: Không có dữ liệu đơn hàng");
+        }
+        if (payload.nextRunTime) {
+          startCountdownTimer(payload.nextRunTime);
+        }
+      });
 
       function renderOrders(orders) {
         const wrapper = document.getElementById("orders-wrapper");
