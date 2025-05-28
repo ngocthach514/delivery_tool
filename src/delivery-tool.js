@@ -1,22 +1,18 @@
-require("dotenv").config();
-const express = require("express");
-const http = require("http");
-const socketIo = require("socket.io");
-const axios = require("axios");
-const mysql = require("mysql2/promise");
-const { OpenAI } = require("openai");
-const pLimitModule = require("p-limit");
-const cron = require("node-cron");
-const moment = require("moment-timezone");
-const bwipjs = require("bwip-js");
-const { doReadNumber, ReadingConfig } = require("read-vietnamese-number");
-
-const pLimit =
-  typeof pLimitModule === "function" ? pLimitModule : pLimitModule.default;
-
+import 'dotenv/config';
+import http from 'http';
+import mysql from 'mysql2/promise';
+import { OpenAI } from 'openai';
+import pLimit from 'p-limit';
+import cron from 'node-cron';
+import moment from 'moment-timezone';
+import { doReadNumber, ReadingConfig } from 'read-vietnamese-number';
+const express = (await import('express')).default;
+import { Server } from 'socket.io';
+const axios = (await import('axios')).default;
+const bwipjs = (await import('bwip-js')).default;
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server);
+const io = new Server(server);
 const port = process.env.PORT || 3000;
 
 app.use(express.json());
@@ -44,6 +40,7 @@ io.on("connection", (socket) => {
 });
 
 let lastApiOrderCount = 0;
+let lastRunTime = null;
 
 const dbConfig = {
   host: process.env.DB_HOST,
@@ -550,7 +547,6 @@ async function findTransportCompany(
  * @returns {Object}
  */
 function parseDeliveryNoteForAddress(note, date_delivery) {
-  const moment = require("moment-timezone");
   if (!note) {
     return {
       transportName: "",
