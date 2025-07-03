@@ -467,7 +467,19 @@
         orders.forEach((o) => {
           const btn = document.createElement("button");
           btn.className = "order-btn";
-          btn.textContent = o.id_order;
+
+          // Nếu là TOD và collect_money === 0 thì tô đỏ và hiện chữ CHƯA THU TIỀN
+          if (o.type === "TOD" && o.collect_money === 0) {
+            btn.style.backgroundColor = "#d32f2f";
+            btn.style.color = "#fff";
+            btn.innerHTML = `${o.id_order}<br><span style="font-size:11px;font-weight:bold;">CHƯA THU TIỀN</span>`;
+          } else if (o.type === "TOD" && o.collect_money === 1) {
+            btn.style.backgroundColor = "#388e3c";
+            btn.style.color = "#fff";
+            btn.innerHTML = `${o.id_order}<br><span style="font-size:11px;font-weight:bold;">ĐÃ THU TIỀN</span>`;
+          } else {
+            btn.textContent = o.id_order;
+          }
 
           btn.addEventListener("mouseenter", () => {
             if (timeout) clearTimeout(timeout);

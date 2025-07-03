@@ -52,6 +52,7 @@ const dbConfig = {
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const API_1 = process.env.API_1_URL;
 const API_2 = process.env.API_2_URL;
+const API_3 = process.env.API_3_URL;
 const API_2_BASE = process.env.API_2_BASE_URL;
 const TOMTOM_API_KEY = process.env.TOMTOM_API_KEY;
 const WAREHOUSE_ADDRESS = process.env.WAREHOUSE_ADDRESS;
@@ -566,7 +567,7 @@ function parseDeliveryNoteForAddress(note, date_delivery) {
   const normalizedNote = note
     .toLowerCase()
     .replace(/(trc|truoc|trước khi)/g, "trước")
-    .replace(/(gap|gấp|khẩn cấp|giao ngay|nhanh nhất|liền|hỏa tốc)/g, "gấp")
+    .replace(/(gap|gấp|khẩn cấp|giao ngay|nhanh nhất|liền|hỏa tốc|AAAAA)/g, "gấp")
     .replace(
       /(sn|sớm nhất|sớm nhé|sang som|sáng sớm|som mai|sớm mai|nhanh nhe|nhanh nhé|sớm giúp|sớm nha|sớm)/g,
       "sớm"
@@ -1516,7 +1517,7 @@ async function fetchAndSaveOrders() {
           old_address: o.old_address,
           DiachiTruSo: o.DiachiTruSo,
           SoLuongHangHoa: o.SoLuongHangHoa,
-          MaKH: o.MaKH, // Thêm MaKH vào addressMap
+          MaKH: o.MaKH,
         },
       ])
     );
@@ -1534,7 +1535,34 @@ async function fetchAndSaveOrders() {
           const addressChanged =
             currentAddress && currentAddress !== newAddress;
           // Chuẩn hóa ToTal thành số nguyên
-          const soLuongHangHoa = parseInt(order.ToTal) || 0; // Mặc định 0 nếu không hợp lệ
+          const soLuongHangHoa = parseInt(order.ToTal) || 0;
+
+          // === Xác định type và collect_money ===
+          let type = "";
+          if (order.TOD === "Y") type = "TOD";
+          else if (order.COD === "Y") type = "COD";
+          let collect_money = 0;
+          if (type === "TOD" && API_3) {
+            try {
+              const api3Res = await retry(() =>
+                axios.get(`${API_3}?spx=${order.MaPX}`)
+              );
+              if (
+                api3Res.data &&
+                api3Res.data.DaThuTien &&
+                api3Res.data.DaThuTien === "Yes"
+              ) {
+                collect_money = 1;
+              }
+            } catch (err) {
+              console.error(
+                `[fetchAndSaveOrders] Lỗi khi gọi API_3 cho MaPX ${order.MaPX}:`,
+                err.message
+              );
+            }
+          }
+          // ================================
+
           return {
             MaPX: order.MaPX,
             DcGiaohang: newAddress,
@@ -1545,12 +1573,14 @@ async function fetchAndSaveOrders() {
             NgayPX: order.NgayPX,
             DiachiTruSo: order.DiachiTruSo || "",
             SoLuongHangHoa: soLuongHangHoa,
-            MaKH: res.data.MaKH || "", // Thêm MaKH từ API_2
+            MaKH: res.data.MaKH || "",
             isEmpty: !newAddress,
             addressChanged,
             old_address: addressChanged
               ? currentAddress
               : addressMap.get(order.MaPX)?.old_address || null,
+            type,
+            collect_money,
           };
         } catch (err) {
           console.error(
@@ -1600,13 +1630,15 @@ async function fetchAndSaveOrders() {
         order.old_address,
         order.DiachiTruSo,
         order.SoLuongHangHoa,
-        order.MaKH, // Thêm MaKH vào values
+        order.MaKH,
+        order.type,
+        order.collect_money,
       ];
     });
 
     const [insertResult] = await connection.query(
       `
-      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at, old_address, DiachiTruSo, SoLuongHangHoa, MaKH)
+      INSERT INTO orders (id_order, address, status, SOKM, delivery_note, date_delivery, created_at, old_address, DiachiTruSo, SoLuongHangHoa, MaKH, type, collect_money)
       VALUES ?
       ON DUPLICATE KEY UPDATE
         address = IF(VALUES(address) != '', VALUES(address), address),
@@ -1618,7 +1650,9 @@ async function fetchAndSaveOrders() {
         old_address = IF(VALUES(old_address) IS NOT NULL AND old_address IS NULL, VALUES(old_address), old_address),
         DiachiTruSo = VALUES(DiachiTruSo),
         SoLuongHangHoa = VALUES(SoLuongHangHoa),
-        MaKH = VALUES(MaKH)
+        MaKH = VALUES(MaKH),
+        type = VALUES(type),
+        collect_money = VALUES(collect_money)
       `,
       [values]
     );
@@ -3051,7 +3085,9 @@ async function groupOrders2(filterDate = null) {
         o.address AS current_address,
         o.old_address,
         o.SoLuongHangHoa,
-        o.MaKH, -- Thêm MaKH
+        o.MaKH,
+        o.type,                -- Thêm trường type
+        o.collect_money,       -- Thêm trường collect_money
         CASE 
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) <= CURDATE() - INTERVAL 2 DAY THEN 2
           WHEN DATE(STR_TO_DATE(o.date_delivery, '%d/%m/%Y %H:%i:%s')) = CURDATE() - INTERVAL 1 DAY THEN 1 
@@ -3142,7 +3178,9 @@ async function groupOrders2(filterDate = null) {
       old_address: row.old_address,
       SoLuongHangHoa:
         row.SoLuongHangHoa !== null ? parseInt(row.SoLuongHangHoa) : 0,
-      MaKH: row.MaKH || "N/A", // Thêm MaKH vào parsedResults
+      MaKH: row.MaKH || "N/A",
+      type: row.type || null,                // Thêm type vào kết quả
+      collect_money: row.collect_money ?? null, // Thêm collect_money vào kết quả
       days_old: row.days_old,
       minutes_since_created:
         row.minutes_since_created !== null ? row.minutes_since_created : 0,
@@ -3696,9 +3734,6 @@ async function generateBarcode(text) {
 async function renderDeliveryNote(order) {
   // Tạo barcode
   const barcodeTop = await generateBarcode(order.MaPX || "N/A");
-  const barcodeFooter = await generateBarcode(
-    order.MSTDoiTac ? order.MSTDoiTac.replace(/\s/g, "") : "N/A"
-  );
 
   // Xác định thông tin liên hệ
   const lastChar = order.MaPX?.slice(-1).toUpperCase() ?? "C";
@@ -3736,6 +3771,7 @@ async function renderDeliveryNote(order) {
     });
   }
   let TongThanhTien = TienHang + TienVAT;
+  const barcodeFooter = await generateBarcode(TongThanhTien.toString());
   // Chuyển số thành chữ tiếng Việt
   const config = new ReadingConfig();
   config.unit = ["đồng"];
@@ -5066,8 +5102,8 @@ app.get("/grouped-orders", async (req, res) => {
 
 // SẮP XẾP ĐƠN HÀNG 2
 app.get("/grouped-orders2", async (req, res) => {
+  console.time("grouped-orders2");
   try {
-    console.time("grouped-orders2");
     const filterDate = req.query.date || null;
 
     console.log(`Gọi groupOrders2 với date: ${filterDate || "all"}`);
@@ -5087,17 +5123,18 @@ app.get("/grouped-orders2", async (req, res) => {
         "[/grouped-orders2] Lỗi khi lấy phiếu chờ xuất:",
         err.message
       );
-      pendingExportCount = 0; // Đảm bảo giá trị mặc định nếu lỗi
+      pendingExportCount = 0;
     }
 
-    console.timeEnd("grouped-orders2");
     res.status(200).json({
       ...groupedOrders,
-      pendingExportCount, // Thêm tổng phiếu chờ xuất vào phản hồi
+      pendingExportCount,
     });
   } catch (error) {
     console.error("Lỗi trong /grouped-orders2:", error.message, error.stack);
     res.status(500).json({ error: "Lỗi server", details: error.message });
+  } finally {
+    console.timeEnd("grouped-orders2");
   }
 });
 
