@@ -102,6 +102,51 @@
         max-width: 200px;
       }
       .order-details .short-cell {
+        /* Responsive order details: Hiển thị dạng dọc và ghi chú đầy đủ */
+        .order-details table,
+        .order-details thead,
+        .order-details tbody,
+        .order-details tr {
+          display: block;
+          width: 100%;
+        }
+        .order-details thead {
+          display: none;
+        }
+        .order-details tr {
+          margin-bottom: 10px;
+          border: none;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+          background: #fff;
+          border-radius: 6px;
+          padding: 8px 0;
+        }
+        .order-details td {
+          display: flex;
+          width: 100%;
+          border: none;
+          padding: 8px 12px;
+          align-items: center;
+          font-size: 14px;
+          white-space: normal;
+          overflow: visible;
+          max-width: 100%;
+        }
+        .order-details td span {
+          flex: 1;
+          white-space: normal;
+          overflow: visible;
+          text-overflow: unset;
+          max-width: 100%;
+        }
+        .order-details .note {
+          width: 100%;
+          max-width: 100%;
+          white-space: normal;
+          overflow: visible;
+          text-overflow: unset;
+          word-break: break-word;
+        }
         max-width: 80px;
         white-space: nowrap;
         overflow: hidden;
@@ -534,7 +579,14 @@
         if (o.priority === 2) priorityText = "Khẩn cấp";
         else if (o.priority === 1) priorityText = "Ưu tiên cao";
 
+        // Ghi chú lên đầu tiên
         const fields = [
+          {
+            label: "Ghi Chú",
+            text: o.delivery_note || "N/A",
+            class: "note",
+            title: o.delivery_note || "",
+          },
           { label: "Mã Đơn Hàng", text: o.id_order || "N/A" },
           {
             label: "Tổng Sản Phẩm Giao",
@@ -572,36 +624,51 @@
             text: o.travel_time !== null ? o.travel_time + " phút" : "N/A",
           },
           { label: "Ngày Xuất Kho", text: o.date_delivery || "N/A" },
-          {
-            label: "Ghi Chú",
-            text: o.delivery_note || "N/A",
-            class: "note",
-            title: o.delivery_note || "",
-          },
         ];
 
         const details = document.getElementById("order-details-content");
-        details.innerHTML = `
-          <table>
-            <thead>
-              <tr>
-                ${fields.map((field) => `<th>${field.label}</th>`).join("")}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
+        // Responsive: table dạng dọc trên mobile/tablet
+        if (window.innerWidth <= 768) {
+          details.innerHTML = `
+            <table style="width:100%;">
+              <tbody>
                 ${fields
                   .map(
                     (field) =>
-                      `<td><span class="${field.class || ""}" title="${
-                        field.title || field.text
-                      }">${field.text}</span></td>`
+                      `<tr>
+                        <th style="text-align:left;width:40%;font-size:13px;vertical-align:top;">${field.label}</th>
+                        <td style="text-align:left;font-size:13px;vertical-align:top;">
+                          <span class="${field.class || ""}" title="${field.title || field.text}" style="display:block;white-space:normal;word-break:break-word;">${field.text}</span>
+                        </td>
+                      </tr>`
                   )
                   .join("")}
-              </tr>
-            </tbody>
-          </table>
-        `;
+              </tbody>
+            </table>
+          `;
+        } else {
+          details.innerHTML = `
+            <table>
+              <thead>
+                <tr>
+                  ${fields.map((field) => `<th>${field.label}</th>`).join("")}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  ${fields
+                    .map(
+                      (field) =>
+                        `<td><span class="${field.class || ""}" title="${
+                          field.title || field.text
+                        }">${field.text}</span></td>`
+                    )
+                    .join("")}
+                </tr>
+              </tbody>
+            </table>
+          `;
+        }
       }
 
       function renderStats() {
