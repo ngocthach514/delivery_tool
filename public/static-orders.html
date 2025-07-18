@@ -331,8 +331,9 @@
         aria-hidden="true"
       >
         <div class="modal-dialog modal-xl">
-          <div class="modal-content">
-            <div class="modal-body">
+          <div class="modal-content" style="position:relative;">
+            <button type="button" class="btn-close" id="closeOrderDetailModal" aria-label="Đóng" style="position:absolute;top:12px;right:18px;z-index:10;"></button>
+            <div class="modal-body" style="max-height:70vh;overflow-y:auto;">
               <div id="order-details-content" class="order-details"></div>
             </div>
           </div>
@@ -496,18 +497,23 @@
         const wrapper = document.getElementById("orders-wrapper");
         wrapper.innerHTML = "";
         if (!orders || orders.length === 0) {
-          wrapper.innerHTML =
-            "<p class='text-center'>Không có đơn hàng nào để hiển thị.</p>";
+          wrapper.innerHTML = "<p class='text-center'>Không có đơn hàng nào để hiển thị.</p>";
           return;
         }
 
-        const modal = new bootstrap.Modal(
-          document.getElementById("orderDetailModal"),
-          {
-            backdrop: false,
-            keyboard: false,
-          }
-        );
+        const modalEl = document.getElementById("orderDetailModal");
+        const modal = new bootstrap.Modal(modalEl, {
+          backdrop: false,
+          keyboard: false,
+        });
+
+        // Đóng modal khi nhấn nút X
+        const closeBtn = document.getElementById("closeOrderDetailModal");
+        if (closeBtn) {
+          closeBtn.onclick = function () {
+            modal.hide();
+          };
+        }
 
         orders.forEach((o) => {
           const btn = document.createElement("button");
@@ -526,27 +532,30 @@
             btn.textContent = o.id_order;
           }
 
-          btn.addEventListener("mouseenter", () => {
-            if (timeout) clearTimeout(timeout);
-            if (updateInterval) {
-              clearInterval(updateInterval);
-              updateInterval = null;
-            }
-            showOrderDetails(o);
-            modal.show();
-          });
-
-          btn.addEventListener("mouseleave", (e) => {
-            timeout = setTimeout(() => {
-              if (
-                !document
-                  .querySelector(".modal-dialog")
-                  .contains(e.relatedTarget)
-              ) {
-                modal.hide();
+          // Trên mobile: click để mở modal, desktop: hover
+          if (window.innerWidth <= 768) {
+            btn.addEventListener("click", () => {
+              showOrderDetails(o);
+              modal.show();
+            });
+          } else {
+            btn.addEventListener("mouseenter", () => {
+              if (timeout) clearTimeout(timeout);
+              if (updateInterval) {
+                clearInterval(updateInterval);
+                updateInterval = null;
               }
-            }, 100);
-          });
+              showOrderDetails(o);
+              modal.show();
+            });
+            btn.addEventListener("mouseleave", (e) => {
+              timeout = setTimeout(() => {
+                if (!document.querySelector(".modal-dialog").contains(e.relatedTarget)) {
+                  modal.hide();
+                }
+              }, 100);
+            });
+          }
 
           wrapper.appendChild(btn);
         });
@@ -555,7 +564,6 @@
         modalDialog.addEventListener("mouseenter", () => {
           if (timeout) clearTimeout(timeout);
         });
-
         modalDialog.addEventListener("mouseleave", (e) => {
           if (!e.relatedTarget || !e.relatedTarget.closest(".order-btn")) {
             modal.hide();
